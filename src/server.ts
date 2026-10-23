@@ -9,6 +9,7 @@ import { RepoIndex, RepoIndexOptions } from "./repo/repo-index";
 import { contextFor, formatContext } from "./tools/context";
 import { findPath, formatPath } from "./tools/find-path";
 import { formatImpact, impact } from "./tools/impact";
+import { formatPlanScore, planScore } from "./tools/plan-score";
 import { repoMap } from "./tools/repo-map";
 
 const INSTRUCTIONS = `RIA gives you a precomputed map of the repository: symbols, an import graph and git co-change history. Prefer it to opening many files.
@@ -16,6 +17,7 @@ const INSTRUCTIONS = `RIA gives you a precomputed map of the repository: symbols
 - Before reading or editing for a task: context_for with the task text and/or a file, then read only what it returns.
 - Before changing a file: impact, and re-read the files and tests it lists after the change.
 - To see how two files or symbols relate: find_path.
+- When there are several ways to do a task: write each as a plan with the files it would change and call plan_score, then follow the ranking or say why you chose differently.
 - Around an edit session: gate_begin before the first edit (it runs the project's own build/test commands for a baseline), gate_check after editing, and if the verdict is regressed or mixed either fix the listed problems and check again, or gate_rollback.
 All paths are relative to the repository root. Results come from regex-based analysis of source files, so check the confidence notes in impact and gate_check output. The gate only runs commands found in the project's own files or ria.config.json; you cannot supply commands.`;
 
@@ -149,6 +151,34 @@ export function createServer(index: RepoIndex): McpServer {
       guarded(index, () => {
         const r = impact(index, { files, depth });
         return "error" in r ? r : formatImpact(r, depth ?? 3);
+      }),
+  );
+
+  server.registerTool(
+    "plan_score",
+    {
+      title: "Rank candidate plans",
+      description:
+        "Call when a task can be done in more than one way, before editing. Give each candidate plan as a short name and the files it would change (files it will create may be listed too). Scores every plan from the import graph and git history: how many files it changes, how many dependents it affects, how many of its files lack tests, which files that usually change together with them it leaves out, and how much has to be read. Returns a ranking with the reasons, the tests to run for each plan and how far to trust it. The score is a heuristic over the plans you propose, not a prediction: it does not know what changes inside a file.",
+      inputSchema: {
+        plans: z
+          .array(
+            z.object({
+              name: z.string().max(80).optional().describe("Short label for the plan, e.g. 'patch the retry in client.ts'."),
+              files: z.array(z.string()).min(1).max(50).describe("Files (or symbols) the plan would change; new files may be included."),
+            }),
+          )
+          .min(1)
+          .max(8)
+          .describe("The candidate plans to compare. Give at least two to get a ranking."),
+        depth: z.number().int().min(1).max(6).optional().describe("How many import hops to follow for dependents. Default 3."),
+      },
+      annotations: readOnly,
+    },
+    async ({ plans, depth }) =>
+      guarded(index, () => {
+        const r = planScore(index, { plans, depth });
+        return "error" in r ? r : formatPlanScore(r);
       }),
   );
 

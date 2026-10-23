@@ -47,19 +47,33 @@ export interface TestLink {
   why: string;
 }
 
+/** Whether a test file's name ties it to `file` (generic names like `index` also need the same folder). */
+export function namedTestFor(testPath: string, file: string): boolean {
+  const stem = stemOf(file);
+  if (testPath === file || stemOf(testPath) !== stem) return false;
+  return !GENERIC_STEMS.has(stem) || path.posix.dirname(testPath) === path.posix.dirname(file);
+}
+
 /** Tests tied to a file by naming convention or by importing it directly. */
 export function testsFor(graph: RepoGraph, file: string): TestLink[] {
   const found = new Map<string, string>();
-  const stem = stemOf(file);
-  const dir = path.posix.dirname(file);
   for (const rec of graph.files.values()) {
-    if (!rec.isTest || rec.path === file || stemOf(rec.path) !== stem) continue;
-    if (!GENERIC_STEMS.has(stem) || path.posix.dirname(rec.path) === dir) found.set(rec.path, "named after it");
+    if (rec.isTest && namedTestFor(rec.path, file)) found.set(rec.path, "named after it");
   }
   for (const importer of graph.inn.get(file) ?? []) {
     if (graph.files.get(importer)?.isTest && !found.has(importer)) found.set(importer, "imports it");
   }
   return [...found].map(([p, why]) => ({ path: p, why }));
+}
+
+/** `tests/auth (40), tests/billing (12)`: where a long list of files is concentrated. */
+export function byDirectory(paths: string[], depth = 2): string {
+  const counts = new Map<string, number>();
+  for (const p of paths) {
+    const dir = p.split("/").slice(0, -1).slice(0, depth).join("/") || ".";
+    counts.set(dir, (counts.get(dir) ?? 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 6).map(([d, n]) => `${d} (${n})`).join(", ");
 }
 
 /** Resolves a user-supplied file/symbol or returns a message the caller can show as-is. */

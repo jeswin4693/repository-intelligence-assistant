@@ -39,16 +39,17 @@ after(async () => {
 describe("MCP server over stdio", () => {
   it("advertises the tools, marking only the navigation ones read-only, with guidance for the model", async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "repo_map"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map"]);
     for (const t of tools) {
       assert.ok((t.description ?? "").length > 40, `${t.name} needs a real description`);
-      const navigation = ["context_for", "find_path", "impact", "repo_map"].includes(t.name);
+      const navigation = ["context_for", "find_path", "impact", "plan_score", "repo_map"].includes(t.name);
       assert.equal(t.annotations?.readOnlyHint, navigation, t.name);
     }
     const rollback = tools.find((t) => t.name === "gate_rollback");
     assert.equal(rollback?.annotations?.destructiveHint, true);
     assert.equal(tools.find((t) => t.name === "gate_begin")?.annotations?.destructiveHint, false);
     assert.match(client.getInstructions() ?? "", /gate_begin/);
+    assert.match(client.getInstructions() ?? "", /plan_score/);
   });
 
   it("repo_map describes the served repository", async () => {
@@ -69,6 +70,29 @@ describe("MCP server over stdio", () => {
     assert.match(text(p), /src\/a\.ts imports src\/b\.ts/);
     const c = await client.callTool({ name: "context_for", arguments: { target: "src/a.ts" } });
     assert.match(text(c), /src\/b\.ts/);
+  });
+
+  it("plan_score ranks candidate plans and reports bad input as a tool error", async () => {
+    const plans = [
+      { name: "Edit b only", files: ["src/b.ts"] },
+      { name: "Edit a and b", files: ["src/a.ts", "src/b.ts"] },
+    ];
+    const r = await client.callTool({ name: "plan_score", arguments: { plans } });
+    assert.ok(!r.isError);
+    assert.match(text(r), /^Plan scores for 2 candidate plans/);
+    assert.match(text(r), /Recommended: /);
+    assert.match(text(r), /tests\/a\.test\.ts/);
+
+    const bad = await client.callTool({ name: "plan_score", arguments: { plans: [{ name: "Dir", files: ["src"] }] } });
+    assert.equal(bad.isError, true);
+    assert.match(text(bad), /"src" is a directory/);
+
+    const none = await client.callTool({ name: "plan_score", arguments: { plans: [] } }).then(
+      (x) => ({ isError: x.isError === true, message: text(x) }),
+      (e: Error) => ({ isError: true, message: e.message }),
+    );
+    assert.equal(none.isError, true);
+    assert.match(none.message, /plans/);
   });
 
   it("sees files changed after the server started", async () => {

@@ -36,8 +36,8 @@ safety inspector.
 The loop an AI chat follows with RIA:
 
 ```text
-orient  ->  find the right files  ->  (plan)  ->  gate_begin  ->  edit  ->  gate_check  ->  fix or gate_rollback
-repo_map    context_for / impact      planned     baseline        chat     better/worse     undo if needed
+orient  ->  find the right files  ->  compare plans  ->  gate_begin  ->  edit  ->  gate_check  ->  fix or gate_rollback
+repo_map    context_for / impact      plan_score         baseline        chat     better/worse     undo if needed
 ```
 
 ---
@@ -68,7 +68,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Idea | What it means | Status |
 |---|---|---|
 | Verified change loop | Baseline before an edit, comparison after, verdict, byte-exact undo | **Built** |
-| Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and risk before editing | Planned (step 3) |
+| Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and ignored coupling before editing | **Built** |
 | Skill forge | Learn from web sources into reusable skills, with provenance, sandbox test and human approval | Planned (step 5) |
 | Roles as configuration | Reader, Analyser, Writer, Fixer, Reviewer are instruction files that tell the chat which RIA tools to use in which order | Planned (step 4) |
 
@@ -82,7 +82,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
                   v   MCP over stdio                                  same tools from a terminal
  +--------------- src/server.ts ---------------+                     +--- src/index.ts (CLI) ---+
  |  repo_map  context_for  find_path  impact    |   NAVIGATION        |  ria map | context |     |
- |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  path | impact | gate    |
+ |  plan_score                                  |   PLANNING          |  path | impact | plan    |
+ |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  gate ...                |
  +----------------------+-----------------------+                     +--------------------------+
                         |
         +---------------+------------------------------+
@@ -98,7 +99,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  your repository (read only)        .ria/  (index cache, gate runs; ignores itself)
                                     .git/refs/ria/gate/<run id>  (snapshot commits)
 
- Planned on top: plan_score, role + skill pack, skill forge, eval harness, VS Code extension.
+ Planned on top: role + skill pack, skill forge, eval harness, VS Code extension.
 ```
 
 ### Code map
@@ -110,18 +111,21 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Graph | `src/repo/resolve.ts`, `graph.ts` | Import to file resolution per language; graph, reach (BFS), shortest path (Dijkstra) |
 | Index store | `src/repo/repo-index.ts`, `ria-dir.ts` | File listing (git or walk), incremental refresh, `.ria/` cache, target resolution (path, suffix, symbol) |
 | History | `src/git/history.ts` | `git` wrapper (stderr kept, long paths on), co-change from `git log` |
-| Navigation tools | `src/tools/repo-map.ts`, `context.ts`, `find-path.ts`, `impact.ts`, `shared.ts` | The four read-only tools and their text reports |
+| Navigation tools | `src/tools/repo-map.ts`, `context.ts`, `find-path.ts`, `impact.ts`, `plan-score.ts`, `shared.ts` | The five read-only tools and their text reports |
 | Gate | `src/gate/snapshot.ts` | Byte-exact snapshots in git, diff between snapshots, restore |
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 149 tests: parsers, graph, git history, snapshots, full gate flows, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 173 tests: parsers, graph, git history, plan scoring, snapshots, full gate flows, real MCP client over stdio |
 
 ### What happens on a call
 
 - **Navigation tool** (`impact`, for example): refresh the index (re-read only files whose size or
   mtime changed) -> build the graph if anything changed -> resolve the file or symbol the caller
   named -> compute dependents, co-change partners, tests and a risk score -> return a text report.
+- **`plan_score`**: resolve every file of every plan (files not in the index count as files the plan
+  creates) -> run `impact` on each plan's files -> turn the result into five point components -> sort
+  by total, with ties broken by content so the order never depends on how the plans were listed.
 - **`gate_begin`**: detect commands -> run each -> snapshot the tree (after the runs, so side
   effects of the checks are part of the starting state) -> save the run under `.ria/gate/<id>/`.
 - **`gate_check`**: snapshot the edited tree -> list changed files -> re-run the commands ->
@@ -155,19 +159,22 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Token budget binds everything except an explicitly requested target | The answer stays small, and asking for a big file by name still works (with a note) |
 | Run ids end in milliseconds plus random hex and are matched against an exact pattern | Runs sort in creation order, and an id from tool input can never become a path |
 | `core.longpaths=true` on every git call, short scratch file names | Deep folders (OneDrive) pass Windows' 260-character limit once git adds `.lock` files |
+| Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
+| `plan_score` returns points per factor, not one opaque number, and says when a figure was capped | The chat (and you) can see why a plan won, and a saturated figure does not look exact |
+| Plans that name files outside the index are scored as creating them; ambiguous names and directories are errors | A typo would score as a new file, so the output says so; guessing between two files would change the ranking silently |
 
 ---
 
 ## Status: what is built
 
-Steps 1 and 2 are done. About 3,400 lines of source and 1,700 lines of tests. All 149 tests
+Steps 1 to 3 are done. About 3,800 lines of source and 2,000 lines of tests. All 173 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
 |---|---|---|
 | 1 | MCP server and navigation tools: `repo_map`, `context_for`, `find_path`, `impact` | Done |
 | 2 | Change gate: `gate_begin`, `gate_check`, `gate_rollback` | Done |
-| 3 | `plan_score` | To do |
+| 3 | Plan scoring: `plan_score` | Done |
 | 4 | Role and skill pack for Copilot Chat and Claude Code | To do |
 | 5 | Skill forge | To do |
 | 6 | Eval harness | To do |
@@ -184,6 +191,10 @@ pass, typecheck and build are clean.
   budget was not enforced, symbols had no line numbers, an ignored folder looked empty, data files were
   guessed as entry points, long test lists were not summarised, rollbacks could change line endings, and long
   paths broke git. Each now has a test.
+- `plan_score` on the same 4,740-file repository (three candidate plans for one task, read-only, `--no-cache`,
+  about 6 s including the index) showed that test lists were unreadable, a file shared by two of three plans
+  appeared nowhere in the overlap section, and capped figures looked exact. Each now has a test. Ranking
+  also does not depend on the order the plans are listed in (all 24 orders of four plans are tested).
 
 **Not verified yet:** use inside the real Copilot Chat or Claude Code interface (only a test client),
 and behaviour against those hosts' tool-call timeouts.
@@ -198,6 +209,7 @@ and behaviour against those hosts' tool-call timeouts.
 | `context_for` | `target` (file or symbol), `query` (task in words), `max_files` (12), `max_tokens` (8000), `include_tests` (true) | Get the smallest ranked set of files to read, each with the reason it matters and a token estimate |
 | `find_path` | `from`, `to` (file, suffix or symbol) | See the cheapest chain of imports between two things, with direction; falls back to co-change evidence |
 | `impact` | `files` (1-50), `depth` (1-6, default 3) | Before changing files: dependents, hidden coupling, tests, public symbols, risk score, confidence |
+| `plan_score` | `plans` (1-8, each a `name` and `files`; files not in the index count as new), `depth` (1-6, default 3) | When a task can be done several ways: rank the candidate plans by files changed, blast radius, missing tests, ignored coupling and reading cost, with the reasons, the tests to run and the confidence |
 | `gate_begin` | `label`, `commands` (names) | Before the first edit: record the tree and run the project's checks as a baseline |
 | `gate_check` | `id`, `commands` | After editing: re-run, compare, verdict |
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
@@ -310,6 +322,7 @@ node dist/index.js context src/server.ts
 node dist/index.js context --query "retry logic for webhooks" --max-tokens 6000
 node dist/index.js path src/index.ts src/repo/graph.ts
 node dist/index.js impact src/repo/graph.ts --depth 3
+node dist/index.js plan --plan "Small=src/repo/graph.ts" --plan "Both=src/repo/graph.ts,src/repo/resolve.ts"
 ```
 
 `--json` prints machine-readable output, `--root <dir>` points at another repository, and
@@ -346,6 +359,15 @@ default root.
   by name or import, and scores risk transparently: 1 point per non-test dependent (max 20) + 2 per strong
   hidden coupling + 4 if no test is tied. Under 5 is low, under 12 medium, otherwise high.
 - `find_path` runs Dijkstra over the import graph: following an import costs 1, walking against one costs 1.25.
+- `plan_score` gives each plan points per factor and adds them up; lower is better. The factors are
+  **scope** (1 point per source file changed or created, half for non-code files, max 20), **blast radius**
+  (dependents outside the plan: 1 point direct, 0.5 at two hops, 0.25 further, max 20), **missing tests**
+  (per source file: 0 with a test named after it, importing it, or added by the plan; 1 if a test reaches it
+  only through other files; 3 if none, max 15), **ignored coupling** (files that change with the plan's files
+  in at least 30% of commits but are not in the plan: 2 points each from 50%, 1 below, max 15) and **reading
+  cost** (1 point per 2,000 tokens of the files, max 10). The recommendation names the factors that separate
+  the best plan from the runner-up, what the best plan costs more in, and calls a lead under 2 points a close
+  call. Capped figures are marked as capped.
 
 ---
 
@@ -354,21 +376,18 @@ default root.
 Each step lists the goal, the design, and how it will be verified. Steps 3 to 5 are the ones
 that make RIA different from other repo assistants.
 
-### Step 3: `plan_score`
+### Step 3: `plan_score` (done)
 
 **Goal.** Choose between several ways to do a task using data, not a hunch. This is the
 "traverse several paths and pick the best one" part of the vision.
 
-**Design.** The chat proposes candidate plans, each with the files it will touch. RIA scores each
-plan deterministically from the graph and history it already has:
-files touched, blast radius (distance-weighted dependents), test coverage (how many touched files have
-a tied test), hidden coupling the plan ignores (files that usually change together but are not in the
-plan), reading cost in tokens, and overlap between plans. It returns a ranking with reasons and a
-recommendation. Same transparent point scoring style as `impact`.
+**Built.** The chat proposes candidate plans, each with the files it will touch. RIA scores each plan
+deterministically from the graph and history it already has (see "How answers are computed" for the
+points) and returns a ranking with reasons, the tests to run for each plan, the overlap between plans and
+a recommendation. The output always says that the score is a heuristic over plans the chat wrote.
 
-**Verify.** Fixture repositories where the best plan is known; ranking stays stable under reordering; later,
-the eval harness checks that higher-scored plans regress less under the gate.
-**Risk.** Garbage in: the candidate list comes from the chat model, and the score is a heuristic. Say so in the output.
+**Still open.** The eval harness (step 6) is where the weights get checked: higher-scored plans should
+regress less under the gate. Until then they are judgement.
 
 ### Step 4: role and skill pack
 
@@ -446,6 +465,12 @@ commands for start, check and rollback.
 - Coupling is blind to history before a rename, and needs git.
 - First index of a large repository is I/O-bound (about 6 s for 4,700 files on OneDrive); later starts use the
   cache, and each call re-checks the file list (about 1 s at that size).
+- `plan_score` ranks the plans the chat proposes; it cannot find a better plan nobody wrote. It sees which files
+  a plan touches, not what changes inside them, so a plan that keeps a file's public API stable scores the same as
+  one that rewrites it. A file name that is not in the index is scored as a new file, so a typo is under-scored (the
+  output says which names it treated as new). The caps mean two very large plans can tie on a factor, and reading
+  cost counts whole files even though a large file can be read in part. Weights are judgement, not fitted;
+  step 6 is where they get checked against gate outcomes.
 - The gate is only as strong as the project's tests. With no test command it can check imports and exports only,
   and it says its confidence is low.
 - The gate needs git and a writable repository. Gate runs block until the commands finish.
@@ -456,7 +481,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 149 tests: parsers, graph, history, snapshots, gate flows, MCP over stdio
+npm test            # 173 tests: parsers, graph, history, plan scoring, snapshots, gate flows, MCP over stdio
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
 

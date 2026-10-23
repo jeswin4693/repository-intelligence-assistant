@@ -8,6 +8,7 @@ import { serve } from "./server";
 import { contextFor, formatContext } from "./tools/context";
 import { findPath, formatPath } from "./tools/find-path";
 import { formatImpact, impact } from "./tools/impact";
+import { formatPlanScore, parsePlanArg, planScore } from "./tools/plan-score";
 import { repoMap } from "./tools/repo-map";
 
 const USAGE = `Repository Intelligence Assistant
@@ -21,7 +22,8 @@ Commands:
   context --query <text>      ...or for a task described in words
   path <from> <to>            Import chain between two files or symbols
   impact <file...>            What a change would touch        [--depth <n>]
-  gate begin                  Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
+  plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
+  gate begin                 Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
 
@@ -49,6 +51,7 @@ function main(): void | Promise<void> {
       focus: { type: "string" },
       query: { type: "string" },
       depth: { type: "string" },
+      plan: { type: "string", multiple: true },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       label: { type: "string" },
@@ -103,6 +106,12 @@ function main(): void | Promise<void> {
       const r = impact(index, { files: args, depth });
       if ("error" in r) return fail(r.error);
       return print(r, formatImpact(r, depth ?? 3));
+    }
+    case "plan": {
+      if (!values.plan?.length) fail('plan needs at least one --plan "Name=file1,file2"');
+      const r = planScore(index, { plans: (values.plan ?? []).map(parsePlanArg), depth: intOption(values.depth, "depth") });
+      if ("error" in r) return fail(r.error);
+      return print(r, formatPlanScore(r));
     }
     case "gate": {
       const env = { index, progress: (m: string) => void process.stderr.write(`ria: ${m}\n`) };
