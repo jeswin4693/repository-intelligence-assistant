@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ria": {
+      "command": "node",
+      "args": ["dist/index.js", "serve"]
+    }
+  }
+}
