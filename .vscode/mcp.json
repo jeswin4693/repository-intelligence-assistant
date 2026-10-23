@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "ria": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/index.js", "serve", "--root", "${workspaceFolder}"]
+    }
+  }
+}
