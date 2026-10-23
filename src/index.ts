@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
 import { gateBegin, gateCheck, gateRollback } from "./gate/gate";
+import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
 import { serve } from "./server";
 import { contextFor, formatContext } from "./tools/context";
@@ -23,6 +24,8 @@ Commands:
   path <from> <to>            Import chain between two files or symbols
   impact <file...>            What a change would touch        [--depth <n>]
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
+  init --host claude|copilot|both   Install the MCP config and the six role files into --root; preview unless --apply
+                              [--roles reader,fixer] [--on-path] [--force] [--apply]
   gate begin                 Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
@@ -52,6 +55,10 @@ function main(): void | Promise<void> {
       query: { type: "string" },
       depth: { type: "string" },
       plan: { type: "string", multiple: true },
+      host: { type: "string" },
+      roles: { type: "string" },
+      "on-path": { type: "boolean" },
+      force: { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       label: { type: "string" },
@@ -71,6 +78,20 @@ function main(): void | Promise<void> {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   const indexOptions = { cache: !values["no-cache"] && !process.env.RIA_NO_CACHE };
   if (command === "serve") return serve(root, indexOptions);
+  if (command === "init") {
+    // before the index exists: indexing would write a .ria/ cache into the repository being set up
+    if (!values.host) throw new Error("init needs --host claude, copilot or both");
+    const plan = planInit(root, {
+      host: values.host as Host,
+      roles: values.roles?.split(",").map((s) => s.trim()).filter(Boolean),
+      onPath: values["on-path"],
+      force: values.force,
+    });
+    if ("error" in plan) throw new Error(plan.error);
+    const written = values.apply ? applyInit(root, plan) : 0;
+    process.stdout.write((values.json ? JSON.stringify({ applied: written, ...plan }, null, 2) : formatInit(plan, root, values.apply === true)) + "\n");
+    return;
+  }
 
   const index = new RepoIndex(root, indexOptions);
   index.refresh();

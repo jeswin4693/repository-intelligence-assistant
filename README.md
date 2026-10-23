@@ -70,7 +70,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Verified change loop | Baseline before an edit, comparison after, verdict, byte-exact undo | **Built** |
 | Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and ignored coupling before editing | **Built** |
 | Skill forge | Learn from web sources into reusable skills, with provenance, sandbox test and human approval | Planned (step 5) |
-| Roles as configuration | Reader, Analyser, Writer, Fixer, Reviewer are instruction files that tell the chat which RIA tools to use in which order | Planned (step 4) |
+| Roles as configuration | Reader, Analyser, Extractor, Writer, Fixer, Reviewer are instruction files that tell the chat which RIA tools to use in which order; `ria init` installs them for Claude Code and Copilot | **Built** |
 
 ---
 
@@ -83,7 +83,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  +--------------- src/server.ts ---------------+                     +--- src/index.ts (CLI) ---+
  |  repo_map  context_for  find_path  impact    |   NAVIGATION        |  ria map | context |     |
  |  plan_score                                  |   PLANNING          |  path | impact | plan    |
- |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  gate ...                |
+ |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  gate ... | init         |
  +----------------------+-----------------------+                     +--------------------------+
                         |
         +---------------+------------------------------+
@@ -99,7 +99,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  your repository (read only)        .ria/  (index cache, gate runs; ignores itself)
                                     .git/refs/ria/gate/<run id>  (snapshot commits)
 
- Planned on top: role + skill pack, skill forge, eval harness, VS Code extension.
+ Planned on top: skill forge, eval harness, VS Code extension.
 ```
 
 ### Code map
@@ -116,7 +116,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 173 tests: parsers, graph, git history, plan scoring, snapshots, full gate flows, real MCP client over stdio |
+| Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The six roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 198 tests: parsers, graph, git history, plan scoring, roles and install, snapshots, full gate flows, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -126,6 +127,9 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 - **`plan_score`**: resolve every file of every plan (files not in the index count as files the plan
   creates) -> run `impact` on each plan's files -> turn the result into five point components -> sort
   by total, with ties broken by content so the order never depends on how the plans were listed.
+- **`ria init`** (command line only): work out every file to write (one MCP config entry and six role files per
+  host) without touching disk -> print that as a preview -> write only with `--apply`. It does not index the
+  repository, so it creates no `.ria/` folder.
 - **`gate_begin`**: detect commands -> run each -> snapshot the tree (after the runs, so side
   effects of the checks are part of the starting state) -> save the run under `.ria/gate/<id>/`.
 - **`gate_check`**: snapshot the edited tree -> list changed files -> re-run the commands ->
@@ -162,12 +166,15 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
 | `plan_score` returns points per factor, not one opaque number, and says when a figure was capped | The chat (and you) can see why a plan won, and a saturated figure does not look exact |
 | Plans that name files outside the index are scored as creating them; ambiguous names and directories are errors | A typo would score as a new file, so the output says so; guessing between two files would change the ranking silently |
+| The six roles are written once and rendered per host | Claude Code skills and VS Code agents differ only in their header, so one edit changes both and a test checks both against the real tool list |
+| `ria init` previews unless `--apply`, keeps a role file you edited unless `--force`, merges into an existing MCP config, and is not an MCP tool | Your edits and other servers survive; a chat must not be able to rewrite its own configuration |
+| On Copilot, read-only roles are given no edit tool and no gate tool | The agent's tool list is an allow-list VS Code enforces, so "does not edit" is real there, unlike the role's steps |
 
 ---
 
 ## Status: what is built
 
-Steps 1 to 3 are done. About 3,800 lines of source and 2,000 lines of tests. All 173 tests
+Steps 1 to 4 are done. About 4,200 lines of source and 2,400 lines of tests. All 198 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -175,7 +182,7 @@ pass, typecheck and build are clean.
 | 1 | MCP server and navigation tools: `repo_map`, `context_for`, `find_path`, `impact` | Done |
 | 2 | Change gate: `gate_begin`, `gate_check`, `gate_rollback` | Done |
 | 3 | Plan scoring: `plan_score` | Done |
-| 4 | Role and skill pack for Copilot Chat and Claude Code | To do |
+| 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init` | Done |
 | 5 | Skill forge | To do |
 | 6 | Eval harness | To do |
 | 7 | VS Code extension | Optional |
@@ -195,9 +202,14 @@ pass, typecheck and build are clean.
   about 6 s including the index) showed that test lists were unreadable, a file shared by two of three plans
   appeared nowhere in the overlap section, and capped figures looked exact. Each now has a test. Ranking
   also does not depend on the order the plans are listed in (all 24 orders of four plans are tested).
+- The role pack: the file formats were checked against each host's current documentation (fetched 2026-10-23, since
+  VS Code has renamed these features before). A test takes the command and arguments `ria init` wrote for each host
+  and starts a real server from them. `ria init` was previewed on the 4,740-file repository (nothing written there,
+  no `.ria/`), applied into a scratch folder, and the generated files were read as the chat would read them; that
+  showed the Fixer's stop condition expected the wrong gate verdict, which is fixed and tested.
 
-**Not verified yet:** use inside the real Copilot Chat or Claude Code interface (only a test client),
-and behaviour against those hosts' tool-call timeouts.
+**Not verified yet:** use inside the real Copilot Chat or Claude Code interface (only a test client, and the role
+files have never been loaded by either host), and behaviour against those hosts' tool-call timeouts.
 
 ---
 
@@ -314,6 +326,47 @@ claude mcp add ria -- node C:/path/to/repository-intelligence-assistant/dist/ind
 This repository ships both configs ([.vscode/mcp.json](.vscode/mcp.json), [.mcp.json](.mcp.json))
 so RIA can analyse itself once built.
 
+**Roles and `ria init`.** The tools work on their own, but a chat does not know which one to use when.
+`ria init` installs the MCP config plus six roles: instruction files that say which RIA tools to call in
+which order, when to stop, and what to report.
+
+```powershell
+node dist/index.js init --host both --root C:/path/to/your/repo           # preview: writes nothing
+node dist/index.js init --host both --root C:/path/to/your/repo --apply   # write the files
+```
+
+| Host | What is written |
+|---|---|
+| `--host claude` | the `ria` entry in `.mcp.json`, and `.claude/skills/ria-<role>/SKILL.md` |
+| `--host copilot` | the `ria` entry in `.vscode/mcp.json`, and `.github/agents/ria-<role>.agent.md` |
+
+| Role | Use it to | Edits | RIA tools |
+|---|---|---|---|
+| Reader | understand or explain code, find where something lives | no | `repo_map`, `context_for`, `find_path` |
+| Analyser | judge size and risk before a change, compare approaches | no | the navigation tools and `plan_score` |
+| Extractor | move or split code without changing behaviour | yes | everything, including the gate |
+| Writer | add a feature or new code | yes | everything, including the gate |
+| Fixer | fix a bug or a failing check, and prove it | yes | the navigation tools and the gate |
+| Reviewer | review someone else's change | no | the navigation tools |
+
+How it behaves: it previews unless `--apply` is given; it keeps a role file you edited (`--force` replaces
+it); it adds the `ria` server to an existing MCP config and keeps your other servers (a config with comments
+is not rewritten: it prints what to add by hand); `--roles reader,fixer` installs only some roles. The
+config names the RIA folder on this machine, so for a repository you share, put `ria` on the PATH and use
+`--on-path`. It is a command-line tool only and not an MCP tool, so a chat cannot rewrite its own
+configuration, and it never indexes the repository.
+
+What is enforced and what is not:
+
+- **Copilot Chat** can only be instructed, and a model can ignore a role's steps. What VS Code does enforce is
+  the agent's `tools` list: the Reader, Analyser and Reviewer are given no edit tool and no gate tool. The
+  list uses `ria/<tool>` names. VS Code's own reference documents `ria/*`; the per-tool form comes from
+  GitHub's custom agent reference, so if your VS Code version ignores it, replace the names with `ria/*`.
+- **Claude Code** skills are instructions too, and RIA writes no permission rules: tool approval stays in
+  your own settings. Claude Code hooks can enforce a loop: its documentation says a `Stop` hook that exits
+  with code 2 keeps Claude from finishing and shows its stderr to Claude. A hook that runs `ria gate check`
+  is not written or tested yet (see the backlog).
+
 **From a terminal**
 
 ```powershell
@@ -389,24 +442,23 @@ a recommendation. The output always says that the score is a heuristic over plan
 **Still open.** The eval harness (step 6) is where the weights get checked: higher-scored plans should
 regress less under the gate. Until then they are judgement.
 
-### Step 4: role and skill pack
+### Step 4: role pack and `ria init` (done)
 
 **Goal.** One set of roles that work in both Copilot Chat and Claude Code: Reader, Analyser, Extractor,
 Writer, Fixer, Reviewer.
 
-**Design.** A role is configuration, not a program: instructions plus which RIA tools to use in which
-order plus stop conditions. All roles share the same loop (`repo_map`, `context_for`, read, `plan_score`,
-`gate_begin`, edit, `gate_check`, fix or `gate_rollback`, report). Packaging per host: Claude Code skills
-(`.claude/skills/<role>/SKILL.md`), Copilot custom agents or chat modes and prompt files (the VS Code
-name and format have changed across versions, so confirm the current one first). A `ria init --host`
-command would write the MCP config and role files into a repository, showing what it will add before it
-does. The Extractor role may need two small tools on top of the existing index: list the exports of a
-file, and search symbols by name.
+**Built.** A role is configuration, not a program: instructions plus which RIA tools to use in which order
+plus stop conditions and what to report. The six roles are defined once in `src/init/roles.ts` and rendered
+as Claude Code skills and VS Code custom agents. `ria init` previews and then writes them with the MCP
+config (see "Roles and `ria init`" for what it writes, what it will not overwrite and what is enforced).
 
-**Verify.** Files validate against each host's format; a scripted walkthrough on a sample repository; compare
-tokens read with and without RIA.
-**Honest limit.** Claude Code hooks can enforce the loop (for example, check before finishing). Copilot Chat can
-only be instructed, and a model can ignore instructions. Do not claim enforcement where there is none.
+**Still open.**
+
+- The role files have never been loaded by Copilot Chat or Claude Code themselves. Whether a model follows
+  them well is for step 6 to measure (tokens read and tool order with and without a role).
+- The two small tools the Extractor might need (list a file's exports, search symbols by name) were not added:
+  `context_for` and the public surface in `impact` cover it so far. Revisit if real use shows a gap.
+- The Claude Code hook that enforces the loop (see the backlog).
 
 ### Step 5: skill forge
 
@@ -445,7 +497,7 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Gate mode that runs only the tests tied to changed files | Large suites make the gate slow |
 | Background gate runs with a status call | Very long suites and host timeouts |
-| Claude Code hook recipe that runs `ria gate check` | Real enforcement; needs the exit-code behaviour of hooks verified first |
+| Claude Code hook recipe that runs `ria gate check` | Real enforcement. Hook exit codes were checked in the Claude Code docs on 2026-10-23 (a `Stop` hook with exit code 2 keeps Claude working; other non-zero codes do not block), but the recipe is not written or tested |
 | PR review mode (`ria review <range>`) | Impact and optional gate on a diff, as a markdown comment |
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
@@ -471,6 +523,11 @@ commands for start, check and rollback.
   output says which names it treated as new). The caps mean two very large plans can tie on a factor, and reading
   cost counts whole files even though a large file can be read in part. Weights are judgement, not fitted;
   step 6 is where they get checked against gate outcomes.
+- The roles are instructions. They tell a chat how to use RIA; they cannot make it. Only the Copilot tool allow-list
+  is enforced (see "Roles and `ria init`"). The generated files follow the host documentation as fetched on
+  2026-10-23, and both hosts have renamed these features before, so re-check the format after a major VS Code or
+  Claude Code update. Built-in Copilot tool names (`read`, `search`, `edit`, `execute`) are ignored by a VS Code
+  version that does not know them.
 - The gate is only as strong as the project's tests. With no test command it can check imports and exports only,
   and it says its confidence is low.
 - The gate needs git and a writable repository. Gate runs block until the commands finish.
@@ -481,7 +538,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 173 tests: parsers, graph, history, plan scoring, snapshots, gate flows, MCP over stdio
+npm test            # 198 tests: parsers, graph, history, plan scoring, roles and install, snapshots, gate flows, MCP over stdio
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
 
