@@ -10,7 +10,7 @@ function body(role: Role): string {
   const limits = [
     "RIA works from imports, symbol names and git history by pattern matching, not a compiler. Treat its confidence notes as part of the answer.",
     ...(role.edits
-      ? ["The gate runs only the project's own commands; you cannot add or change them.", "Do not call the change done until `gate_check` has run."]
+      ? ["The gate runs only the project's own commands; you cannot add or change them.", "Do not call a change done until `gate_check` has run."]
       : ["This role does not edit files."]),
     ...(role.rules ?? []),
   ];
@@ -25,6 +25,18 @@ function body(role: Role): string {
     "",
     ...role.steps.map((s, i) => `${i + 1}. ${s}`),
     "",
+    ...(role.ask
+      ? [
+          "## Ask the user",
+          "",
+          "Do everything else yourself without asking permission: reading files, calling RIA tools, choosing between files, editing inside the plan, running the gate and fixing what it reports. Stop and ask only when one of these is true:",
+          "",
+          ...role.ask.map((s) => `- ${s}`),
+          "",
+          "How to ask: one question at a time. Say what you found, offer two or three options with your recommendation first, and wait for the answer. Never ask something you can find out from the files or from RIA.",
+          "",
+        ]
+      : []),
     "## Stop when",
     "",
     ...role.stop.map((s) => `- ${s}`),

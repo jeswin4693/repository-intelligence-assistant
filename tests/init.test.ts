@@ -67,8 +67,8 @@ async function serverToolNames(): Promise<string[]> {
 const textOf = (r: Role) => [...r.steps, ...r.stop, ...r.report].join("\n");
 
 describe("roles", () => {
-  it("defines the six roles, each with steps, a stop condition and a report", () => {
-    assert.deepEqual(ROLES.map((r) => r.id), ["reader", "analyser", "extractor", "writer", "fixer", "reviewer"]);
+  it("defines the roles, each with steps, a stop condition and a report", () => {
+    assert.deepEqual(ROLES.map((r) => r.id), ["autopilot", "reader", "analyser", "extractor", "writer", "fixer", "reviewer"]);
     for (const r of ROLES) {
       assert.ok(r.steps.length >= 3, `${r.id} steps`);
       assert.ok(r.stop.length >= 1 && r.report.length >= 1, `${r.id} stop and report`);
@@ -104,6 +104,41 @@ describe("roles", () => {
       assert.ok(r.stop.some((s) => /`regressed` or `mixed`.*`gate_rollback`/.test(s)), `${r.id} says when to roll back`);
       assert.ok(r.stop.some((s) => /`unverified`.*do not describe the change as verified/.test(s)), `${r.id} says what unverified means`);
     }
+  });
+
+  it("gives the autopilot the whole loop, and the habit of asking only when a decision is needed", () => {
+    const autopilot = ROLES.find((r) => r.id === "autopilot")!;
+    assert.deepEqual([...autopilot.tools].sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map"]);
+    assert.ok(autopilot.edits);
+    const steps = autopilot.steps.join("\n");
+    for (const tool of ["repo_map", "context_for", "impact", "plan_score", "gate_begin", "gate_check"]) assert.match(steps, new RegExp(`\`${tool}\``), tool);
+    assert.match(steps, /question.*make no edits/, "a question or a review does not edit");
+
+    const text = claudeSkill(autopilot);
+    const [, afterAsk] = text.split("## Ask the user");
+    const [askSection] = afterAsk.split("## Stop when");
+    assert.match(askSection, /Do everything else yourself without asking permission/);
+    assert.match(askSection, /is unclear, has two reasonable readings/);
+    assert.match(askSection, /close call/);
+    assert.match(askSection, /cannot be undone or leaves the repository/);
+    assert.match(askSection, /`gate_begin` finds no build or test command to run.*ask whether to go on or to add a test first/, "it says before editing when nothing can verify the change");
+    assert.doesNotMatch(askSection, /high risk/, "plan_score compares plans, it does not grade them");
+    assert.match(askSection, /one question at a time.*recommendation first.*Never ask something you can find out from the files/);
+    assert.ok(text.indexOf("## Ask the user") < text.indexOf("## Stop when"), "the question rules come before the stop conditions");
+
+    // it never does the outward-facing or destructive things on its own
+    const limits = text.split("## Limits")[1];
+    assert.match(limits, /Never commit, push, open a pull request or apply `gate_rollback` on your own/);
+    assert.match(limits, /Do not call a change done until `gate_check` has run/, "worded so that it does not contradict a question that needs no gate");
+    assert.match(autopilot.stop[0], /Do not commit, push or open a pull request yourself/);
+    assert.match(autopilot.stop.join("\n"), /`gate_rollback` \(a preview\), show the user what it would undo, and ask/);
+  });
+
+  it("gives the Copilot autopilot every RIA tool and the editing tools, and no other role the ask section", () => {
+    const tools = frontmatter(copilotAgent(ROLES.find((r) => r.id === "autopilot")!)).tools as string[];
+    for (const t of ["edit", "execute", "ria/repo_map", "ria/plan_score", "ria/gate_begin", "ria/gate_check", "ria/gate_rollback"]) assert.ok(tools.includes(t), t);
+    for (const r of ROLES.filter((x) => x.id !== "autopilot")) assert.doesNotMatch(claudeSkill(r), /## Ask the user/, r.id);
+    assert.match(copilotAgent(ROLES[0]), /## Ask the user/);
   });
 
   it("puts a hard rule under Limits, not among the stop conditions", () => {
@@ -159,15 +194,17 @@ describe("rendering", () => {
 });
 
 describe("planInit and applyInit", () => {
-  it("previews without writing anything, then writes the MCP config and all twelve role files", () => {
+  it("previews without writing anything, then writes the MCP config and all fourteen role files", () => {
     const dir = repo();
     const before = listFiles(dir);
     const p = plan(dir, { host: "both" });
-    assert.equal(p.actions.length, 14);
+    assert.equal(p.actions.length, 16);
     assert.ok(kinds(p).every((k) => k === "create"));
     assert.deepEqual(listFiles(dir), before, "planning writes nothing");
 
-    assert.equal(applyInit(dir, p), 14);
+    assert.equal(applyInit(dir, p), 16);
+    assert.ok(fs.existsSync(path.join(dir, ".claude/skills/ria-autopilot/SKILL.md")));
+    assert.ok(fs.existsSync(path.join(dir, ".github/agents/ria-autopilot.agent.md")));
     assert.ok(fs.existsSync(path.join(dir, ".claude/skills/ria-reviewer/SKILL.md")));
     assert.ok(fs.existsSync(path.join(dir, ".github/agents/ria-reviewer.agent.md")));
     assert.deepEqual(readJson(dir, ".mcp.json"), { mcpServers: { ria: { type: "stdio", command: "node", args: [FAKE_ENTRY, "serve"] } } });
@@ -295,7 +332,7 @@ describe("planInit and applyInit", () => {
 
     const badRole = planInit(dir, { host: "claude", roles: ["reader", "poet"] });
     assert.ok("error" in badRole);
-    assert.match(badRole.error, /Unknown role "poet"\. Roles: reader, analyser, extractor, writer, fixer, reviewer/);
+    assert.match(badRole.error, /Unknown role "poet"\. Roles: autopilot, reader, analyser, extractor, writer, fixer, reviewer/);
 
     assert.throws(
       () => applyInit(dir, { actions: [{ path: "../escape.txt", kind: "create", detail: "x", content: "x" }], notes: [] }),
@@ -309,14 +346,14 @@ describe("planInit and applyInit", () => {
     const p = plan(dir, { host: "both" });
     const preview = formatInit(p, dir, false);
     assert.match(preview, /preview only, nothing was written\. Add --apply/);
-    assert.match(preview, /14 to create, 0 to update, 0 unchanged/);
+    assert.match(preview, /16 to create, 0 to update, 0 unchanged/);
     assert.match(preview, /create +\.mcp\.json {2}\(registers the ria server\)/);
     assert.match(preview, /create +\.claude\/skills\/ria-reader\/SKILL\.md\n/);
 
     applyInit(dir, p);
     const applied = formatInit(p, dir, true);
     assert.match(applied, /: applied/);
-    assert.match(applied, /14 created, 0 updated/);
+    assert.match(applied, /16 created, 0 updated/);
     assert.match(applied, /created +\.mcp\.json/);
   });
 });

@@ -26,7 +26,7 @@ Commands:
   path <from> <to>            Import chain between two files or symbols
   impact <file...>            What a change would touch        [--depth <n>]
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
-  init --host claude|copilot|both   Install the MCP config and the six role files into --root; preview unless --apply
+  init --host claude|copilot|both   Install the MCP config and the role files into --root; preview unless --apply
                               [--roles reader,fixer] [--on-path] [--force] [--apply]
   eval history                Replay the repository's own git history against the tools (read-only)  [--commits <n>] [--max-files <n>]
                               [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold

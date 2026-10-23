@@ -116,9 +116,9 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The six roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
+| Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 219 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 221 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -131,7 +131,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 - **`ria eval history`** (command line only): read the log -> for each recent commit, rebuild the history of the
   commits older than it and make the index answer from that -> ask `impact` and `context_for` the question a
   developer would have had -> score the answers against what the commit really touched, and against baselines.
-- **`ria init`** (command line only): work out every file to write (one MCP config entry and six role files per
+- **`ria init`** (command line only): work out every file to write (one MCP config entry and seven role files per
   host) without touching disk -> print that as a preview -> write only with `--apply`. It does not index the
   repository, so it creates no `.ria/` folder.
 - **`gate_begin`**: detect commands -> run each -> snapshot the tree (after the runs, so side
@@ -170,7 +170,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
 | `plan_score` returns points per factor, not one opaque number, and says when a figure was capped | The chat (and you) can see why a plan won, and a saturated figure does not look exact |
 | Plans that name files outside the index are scored as creating them; ambiguous names and directories are errors | A typo would score as a new file, so the output says so; guessing between two files would change the ranking silently |
-| The six roles are written once and rendered per host | Claude Code skills and VS Code agents differ only in their header, so one edit changes both and a test checks both against the real tool list |
+| The roles are written once and rendered per host | Claude Code skills and VS Code agents differ only in their header, so one edit changes both and a test checks both against the real tool list |
 | `ria init` previews unless `--apply`, keeps a role file you edited unless `--force`, merges into an existing MCP config, and is not an MCP tool | Your edits and other servers survive; a chat must not be able to rewrite its own configuration |
 | On Copilot, read-only roles are given no edit tool and no gate tool | The agent's tool list is an allow-list VS Code enforces, so "does not edit" is real there, unlike the role's steps |
 | The history evaluation shows each commit only the commits older than it, and prints every rate next to a baseline of the same size | Otherwise the answer leaks into the question, and a recall figure has nothing to be compared with |
@@ -181,7 +181,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 219 tests
+Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 221 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -354,8 +354,9 @@ This repository ships both configs ([.vscode/mcp.json](.vscode/mcp.json), [.mcp.
 so RIA can analyse itself once built.
 
 **Roles and `ria init`.** The tools work on their own, but a chat does not know which one to use when.
-`ria init` installs the MCP config plus six roles: instruction files that say which RIA tools to call in
-which order, when to stop, and what to report.
+`ria init` installs the MCP config plus seven roles: instruction files that say which RIA tools to call in
+which order, when to stop, and what to report. Six are specialists; the seventh, the **Autopilot**, runs a whole
+task by itself (see below).
 
 ```powershell
 node dist/index.js init --host both --root C:/path/to/your/repo           # preview: writes nothing
@@ -369,6 +370,7 @@ node dist/index.js init --host both --root C:/path/to/your/repo --apply   # writ
 
 | Role | Use it to | Edits | RIA tools |
 |---|---|---|---|
+| Autopilot | do a whole task start to finish: a question, a feature, a fix, a move of code or a review; asks only when a decision is needed | yes | everything, including the gate |
 | Reader | understand or explain code, find where something lives | no | `repo_map`, `context_for`, `find_path` |
 | Analyser | judge size and risk before a change, compare approaches | no | the navigation tools and `plan_score` |
 | Extractor | move or split code without changing behaviour | yes | everything, including the gate |
@@ -393,6 +395,29 @@ What is enforced and what is not:
   your own settings. Claude Code hooks can enforce a loop: its documentation says a `Stop` hook that exits
   with code 2 keeps Claude from finishing and shows its stderr to Claude. A hook that runs `ria gate check`
   is not written or tested yet (see the backlog).
+
+**The Autopilot.** Hand it a task and it works out what kind of task it is (a question, a change or a review),
+finds the files, checks the impact, compares approaches with `plan_score` when there is more than one, records a
+baseline with `gate_begin`, makes the change, runs `gate_check`, fixes what it reports (two attempts), and reports,
+all without asking permission for routine steps. The AI work (reading, reasoning, writing code) is done by the chat
+model you already have; RIA supplies the evidence and the safety net, so there is still no model inside RIA and
+no API key.
+
+It stops and asks, one question at a time with its recommendation first, only when:
+
+- the task is unclear, has two reasonable readings, or names a file that does not exist or is ambiguous;
+- the right behaviour depends on a preference or a business rule that no file or test settles;
+- `plan_score` calls it a close call, or RIA's confidence is low;
+- `gate_begin` finds no build or test command, so the change could not be verified;
+- the change needs files beyond the plan, or changes a public signature it cannot update everywhere;
+- something cannot be undone or leaves the repository (deleting files it did not create, installing packages,
+  network calls, credentials);
+- two fix attempts did not pass the gate: it shows the rollback preview and asks what to do.
+
+It never commits, pushes, opens a pull request or applies a rollback on its own, and never makes a check pass by
+weakening a test. Two honest limits: it is an instruction file, so a model can still ignore it; and how
+"automatic" it feels depends on the host, which may show its own approval prompts for each tool or command
+(RIA writes no permission rules, and the syntax for pre-approving the RIA tools has not been checked).
 
 **From a terminal**
 
@@ -480,17 +505,18 @@ regress less under the gate. Until then they are judgement.
 ### Step 4: role pack and `ria init` (done)
 
 **Goal.** One set of roles that work in both Copilot Chat and Claude Code: Reader, Analyser, Extractor,
-Writer, Fixer, Reviewer.
+Writer, Fixer, Reviewer, and an Autopilot that runs the whole loop and asks only when a decision is needed.
 
 **Built.** A role is configuration, not a program: instructions plus which RIA tools to use in which order
-plus stop conditions and what to report. The six roles are defined once in `src/init/roles.ts` and rendered
+plus stop conditions and what to report. The seven roles are defined once in `src/init/roles.ts` and rendered
 as Claude Code skills and VS Code custom agents. `ria init` previews and then writes them with the MCP
 config (see "Roles and `ria init`" for what it writes, what it will not overwrite and what is enforced).
 
 **Still open.**
 
 - The role files have never been loaded by Copilot Chat or Claude Code themselves. Whether a model follows
-  them well is for step 6 to measure (tokens read and tool order with and without a role).
+  them well (does the Autopilot really ask only when it should?) can only be seen by trying it in the host: RIA has
+  no model to drive that test, so it is a trial for you to run.
 - The two small tools the Extractor might need (list a file's exports, search symbols by name) were not added:
   `context_for` and the public surface in `impact` cover it so far. Revisit if real use shows a gap.
 - The Claude Code hook that enforces the loop (see the backlog).
@@ -591,7 +617,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 219 tests, about 75 s: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 221 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
