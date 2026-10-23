@@ -161,7 +161,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 and 2 are done. About 3,400 lines of source and 1,700 lines of tests. All 149 tests
-pass, typecheck and build are clean. **Nothing is committed yet.**
+pass, typecheck and build are clean.
 
 | Step | What | State |
 |---|---|---|

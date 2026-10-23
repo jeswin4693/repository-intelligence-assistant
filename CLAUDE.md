@@ -4,7 +4,7 @@ RIA is an MCP server and CLI that gives AI chats repo navigation (`repo_map`, `c
 and a change gate (`gate_begin`, `gate_check`, `gate_rollback`). No LLM, no API key, any language.
 **The full plan, architecture, status and roadmap are in [README.md](README.md). Read it before changing anything.**
 
-Status: steps 1 (navigation) and 2 (change gate) are built; step 3 `plan_score` is next. Nothing is committed yet.
+Status: steps 1 (navigation) and 2 (change gate) are built; step 3 `plan_score` is next.
 
 ## Commands
 
