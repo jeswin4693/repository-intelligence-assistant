@@ -2,6 +2,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
+import { evaluateGate, formatGateEval } from "./eval/gate-eval";
+import { evaluateHistory, formatHistoryEval } from "./eval/history-eval";
 import { gateBegin, gateCheck, gateRollback } from "./gate/gate";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
@@ -26,7 +28,10 @@ Commands:
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
   init --host claude|copilot|both   Install the MCP config and the six role files into --root; preview unless --apply
                               [--roles reader,fixer] [--on-path] [--force] [--apply]
-  gate begin                 Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
+  eval history                Replay the repository's own git history against the tools (read-only)  [--commits <n>] [--max-files <n>]
+                              [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold
+  eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
+  gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
 
@@ -44,6 +49,13 @@ function intOption(value: string | undefined, name: string): number | undefined 
   return n;
 }
 
+function ratioOption(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`--${name} must be a number from 0 to 1`);
+  return n;
+}
+
 function main(): void | Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -55,6 +67,9 @@ function main(): void | Promise<void> {
       query: { type: "string" },
       depth: { type: "string" },
       plan: { type: "string", multiple: true },
+      commits: { type: "string" },
+      "min-recall": { type: "string" },
+      "min-context-hit": { type: "string" },
       host: { type: "string" },
       roles: { type: "string" },
       "on-path": { type: "boolean" },
@@ -78,6 +93,33 @@ function main(): void | Promise<void> {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   const indexOptions = { cache: !values["no-cache"] && !process.env.RIA_NO_CACHE };
   if (command === "serve") return serve(root, indexOptions);
+  if (command === "eval" && args[0] === "gate") {
+    // builds its own throwaway projects: --root is not used
+    return evaluateGate(undefined, (name) => void process.stderr.write(`ria: ${name}\n`)).then((r) => {
+      process.stdout.write((values.json ? JSON.stringify(r, null, 2) : formatGateEval(r)) + "\n");
+      if (r.results.some((x) => !x.ok)) process.exitCode = 1;
+    });
+  }
+  if (command === "eval") {
+    if (args[0] !== "history") throw new Error("eval needs a subcommand: history or gate");
+    // measuring must never write into the repository being measured, so the cache is off whatever the flags say
+    const evalIndex = new RepoIndex(root, { cache: false });
+    evalIndex.refresh();
+    const r = evaluateHistory(evalIndex, { commits: intOption(values.commits, "commits"), maxFiles: intOption(values["max-files"], "max-files") });
+    if ("error" in r) throw new Error(r.error);
+    process.stdout.write((values.json ? JSON.stringify(r, null, 2) : formatHistoryEval(r)) + "\n");
+    // optional thresholds, so a team can fail its own CI when the tools stop helping on its repository
+    const below: string[] = [];
+    const minRecall = ratioOption(values["min-recall"], "min-recall");
+    const minContext = ratioOption(values["min-context-hit"], "min-context-hit");
+    if (minRecall !== undefined && (r.impact?.rates.union ?? 0) < minRecall) below.push(`impact found the held-out file in ${Math.round((r.impact?.rates.union ?? 0) * 100)}% of cases, below --min-recall ${minRecall}`);
+    if (minContext !== undefined && (r.context?.anyHit ?? 0) < minContext) below.push(`context_for found a file of the commit in ${Math.round((r.context?.anyHit ?? 0) * 100)}% of cases, below --min-context-hit ${minContext}`);
+    if (below.length) {
+      for (const b of below) process.stderr.write(`ria: ${b}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (command === "init") {
     // before the index exists: indexing would write a .ria/ cache into the repository being set up
     if (!values.host) throw new Error("init needs --host claude, copilot or both");

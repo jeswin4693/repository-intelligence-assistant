@@ -99,7 +99,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  your repository (read only)        .ria/  (index cache, gate runs; ignores itself)
                                     .git/refs/ria/gate/<run id>  (snapshot commits)
 
- Planned on top: skill forge, eval harness, VS Code extension.
+ Planned on top: skill forge, VS Code extension.
 ```
 
 ### Code map
@@ -117,7 +117,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The six roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 198 tests: parsers, graph, git history, plan scoring, roles and install, snapshots, full gate flows, real MCP client over stdio |
+| Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 219 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -127,6 +128,9 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 - **`plan_score`**: resolve every file of every plan (files not in the index count as files the plan
   creates) -> run `impact` on each plan's files -> turn the result into five point components -> sort
   by total, with ties broken by content so the order never depends on how the plans were listed.
+- **`ria eval history`** (command line only): read the log -> for each recent commit, rebuild the history of the
+  commits older than it and make the index answer from that -> ask `impact` and `context_for` the question a
+  developer would have had -> score the answers against what the commit really touched, and against baselines.
 - **`ria init`** (command line only): work out every file to write (one MCP config entry and six role files per
   host) without touching disk -> print that as a preview -> write only with `--apply`. It does not index the
   repository, so it creates no `.ria/` folder.
@@ -169,12 +173,15 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | The six roles are written once and rendered per host | Claude Code skills and VS Code agents differ only in their header, so one edit changes both and a test checks both against the real tool list |
 | `ria init` previews unless `--apply`, keeps a role file you edited unless `--force`, merges into an existing MCP config, and is not an MCP tool | Your edits and other servers survive; a chat must not be able to rewrite its own configuration |
 | On Copilot, read-only roles are given no edit tool and no gate tool | The agent's tool list is an allow-list VS Code enforces, so "does not edit" is real there, unlike the role's steps |
+| The history evaluation shows each commit only the commits older than it, and prints every rate next to a baseline of the same size | Otherwise the answer leaks into the question, and a recall figure has nothing to be compared with |
+| `ria eval` never writes into the repository it measures (cache off, whatever the flags say), and `eval gate` builds its own throwaway projects | Measuring must not change what is measured |
+| An evaluation states what its sample can and cannot show (margins of error, "not shown" instead of "better") | The first reading of the `plan_score` check overclaimed; the margin of error corrected it |
 
 ---
 
 ## Status: what is built
 
-Steps 1 to 4 are done. About 4,200 lines of source and 2,400 lines of tests. All 198 tests
+Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 219 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -184,7 +191,7 @@ pass, typecheck and build are clean.
 | 3 | Plan scoring: `plan_score` | Done |
 | 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init` | Done |
 | 5 | Skill forge | To do |
-| 6 | Eval harness | To do |
+| 6 | Eval harness: `ria eval history`, `ria eval gate` | Done |
 | 7 | VS Code extension | Optional |
 
 **How it was verified**
@@ -208,8 +215,28 @@ pass, typecheck and build are clean.
   no `.ria/`), applied into a scratch folder, and the generated files were read as the chat would read them; that
   showed the Fixer's stop condition expected the wrong gate verdict, which is fixed and tested.
 
+**Measured so far.** One repository (a 4,740-file TypeScript test-automation project with 1,488 commits), read-only,
+with `ria eval history`. The numbers describe that repository and nothing else.
+
+| Question | Result | Compared with |
+|---|---|---|
+| One file of a real commit is held out: did `impact` list it? (453 cases from 150 commits) | 39% | 5% for a list of the same length from the same folders, 0.3% at random |
+| ...through what | 16% git history alone, 11% import graph, 11% tied tests | |
+| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 42%, and 19% of the commit's files on average | 0.3% at random |
+| How much `context_for` returned | median about 7,900 tokens (0.05% of reading the whole repository); a third of the answers were over the 8,000-token budget | The best file is always returned, and some files in this repository are over 200,000 tokens |
+| Does the `plan_score` of a change predict a fix on the same files within 10 commits better than file count does? (147 changes) | 61%, plus or minus 11 | 50%, plus or minus 11 for file count: not shown to be better |
+| The gate against 13 injected faults and fixes | 13 of 13 verdicts right, 13 of 13 rollbacks byte-exact | Cases the gate was built for, so a guard against regressions, not an independent test |
+
+Two things the measurements changed. A first reading of the `plan_score` check said it "adds something beyond size";
+the margin of error showed it does not yet, and the report now says that. And a guess that `impact` misses dependents
+because it shows only 25 of them in alphabetical order was tested by showing 100 and then all of them: dependents
+went from 11.5% to 11.9%, so the cut-off is not the problem and ranking was left alone (only the tests list gains,
+from 11% to 17%).
+
 **Not verified yet:** use inside the real Copilot Chat or Claude Code interface (only a test client, and the role
-files have never been loaded by either host), and behaviour against those hosts' tool-call timeouts.
+files have never been loaded by either host), behaviour against those hosts' tool-call timeouts, and whether a
+chat given a role actually follows it (that needs a model, which RIA does not have). The history numbers come from
+one repository.
 
 ---
 
@@ -378,6 +405,14 @@ node dist/index.js impact src/repo/graph.ts --depth 3
 node dist/index.js plan --plan "Small=src/repo/graph.ts" --plan "Both=src/repo/graph.ts,src/repo/resolve.ts"
 ```
 
+**Measure it** (nothing is written to the repository):
+
+```powershell
+node dist/index.js eval history --root C:/path/to/your/repo                       # how well do the tools predict real commits?
+node dist/index.js eval history --root C:/path/to/your/repo --min-recall 0.3      # exit code 1 below 30%, for CI
+npm run eval                                                                      # the gate against injected faults (about 40 s)
+```
+
 `--json` prints machine-readable output, `--root <dir>` points at another repository, and
 `--no-cache` (or `RIA_NO_CACHE=1`) stops RIA writing to the repository. `RIA_ROOT` sets the
 default root.
@@ -474,14 +509,25 @@ skill's declared checks with a timeout in a temporary copy, secrets removed from
 round-trips; approval is required and cannot be skipped by a tool argument.
 **Honest limit.** Process sandboxing on Windows is weak. Treat it as a safety net, with human approval as the real boundary.
 
-### Step 6: eval harness
+### Step 6: eval harness (done)
 
 **Goal.** Measure whether the tools help, so quality is shown and not assumed, and guard against regressions in RIA itself.
 
-**Design.** Fixture repositories with known tasks and injected faults. Metrics: `context_for` recall at k and
-tokens saved against reading everything; `impact` precision and recall by leave-one-out on real git history
-(hide one file of a past commit, see whether the others predict it); gate verdict accuracy on injected faults;
-`plan_score` ranking against actual gate outcomes. Output a report and a threshold that fails CI.
+**Built.** `ria eval history` replays a repository's own git history against the tools without writing to it:
+`impact` by holding out one file of a commit, `context_for` with the commit subject as the task, and an exploratory
+check of `plan_score`. Each case sees only the commits older than the one tested, and each rate is printed next to a
+baseline of the same size (files from the same folders, files at random). `--min-recall` and `--min-context-hit`
+make it exit with code 1 below a rate, so a team can gate its own CI. `ria eval gate` (also `npm run eval`) builds
+13 throwaway projects, injects one fault or fix into each, and exits with code 1 if a verdict or a byte-exact
+rollback is wrong. See "Measured so far" for what it found.
+
+**Still open.**
+
+- The roles cannot be measured without a model: whether a chat follows them, and what it reads with and without
+  them. That needs a driver that calls a model, which RIA deliberately does not contain.
+- `plan_score` has not been shown to predict trouble better than counting files, and its weights remain
+  judgement. A repository with more fix commits, or several repositories, would tell.
+- Only one repository has been measured. Run `ria eval history --root <repo>` on others before trusting a rate.
 
 ### Step 7 (optional): VS Code extension
 
@@ -502,6 +548,9 @@ commands for start, check and rollback.
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
 | Faster warm refresh (file watcher or `git status` fast path) | About 1 s per call at 4,700 files on OneDrive |
+| `context_for`: return an outline of the symbols with line numbers when the best file alone is far over the budget | A third of tasks on the measured repository got an answer over the budget, because the best file is always returned whole |
+| `impact`: show more of the tied tests, or rank them before cutting at 25 | Showing all of them found 17% of held-out files instead of 11% |
+| Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits |
 
 ---
 
@@ -528,6 +577,10 @@ commands for start, check and rollback.
   2026-10-23, and both hosts have renamed these features before, so re-check the format after a major VS Code or
   Claude Code update. Built-in Copilot tool names (`read`, `search`, `edit`, `execute`) are ignored by a VS Code
   version that does not know them.
+- `ria eval history` measures whether the tools predict what developers did, not whether what they did was right,
+  and it uses today's import graph with the history as it was. Commit subjects are often too short to be a task
+  (102 of 150 on the measured repository). The `plan_score` check treats "a fix, bug or revert commit touched the
+  same files soon after" as the outcome, which is noisy. The gate matrix tests cases the gate was built for.
 - The gate is only as strong as the project's tests. With no test command it can check imports and exports only,
   and it says its confidence is low.
 - The gate needs git and a writable repository. Gate runs block until the commands finish.
@@ -538,7 +591,8 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 198 tests: parsers, graph, history, plan scoring, roles and install, snapshots, gate flows, MCP over stdio
+npm test            # 219 tests, about 75 s: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
 

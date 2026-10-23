@@ -63,6 +63,7 @@ export class RepoIndex {
   private historyCache: History | null = null;
   /** `undefined` until looked up after the latest refresh. */
   private headCache: string | null | undefined;
+  private historyOverride: History | null | undefined;
   private readonly persist: boolean;
 
   constructor(root: string, options: RepoIndexOptions = {}) {
@@ -162,8 +163,17 @@ export class RepoIndex {
     return this.graphCache.graph;
   }
 
+  /**
+   * For evaluation: answer history questions as if only these commits existed (what a developer
+   * knew before a given commit). `undefined` goes back to reading git.
+   */
+  useHistory(history: History | null | undefined): void {
+    this.historyOverride = history;
+  }
+
   /** Null outside a git repository, or in one with no commits. */
   history(): History | null {
+    if (this.historyOverride !== undefined) return this.historyOverride;
     // HEAD is read once per refresh: this is called per file by impact and plan_score, and each lookup spawns git
     if (this.headCache === undefined) this.headCache = headOf(this.root);
     const head = this.headCache;

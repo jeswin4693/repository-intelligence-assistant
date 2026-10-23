@@ -43,9 +43,53 @@ export function headOf(root: string): string | null {
 }
 
 /**
- * Reads recent history. Commits touching more than `maxFilesPerCommit` files
- * (mass renames, formatting runs, vendor drops) are skipped because they link
- * unrelated files. Returns null outside a git repo or in one without commits.
+ * Indexes commits (each a list of files) for co-change lookups. Commits touching
+ * more than `maxFilesPerCommit` files (mass renames, formatting runs, vendor
+ * drops) are skipped because they link unrelated files.
+ */
+export function buildHistory(commitFiles: string[][], head: string, maxFilesPerCommit = 40): History {
+  const commits: string[][] = [];
+  const byFile = new Map<string, number[]>();
+  for (const files of commitFiles) {
+    if (files.length === 0 || files.length > maxFilesPerCommit) continue;
+    const idx = commits.push(files) - 1;
+    for (const f of files) {
+      const list = byFile.get(f);
+      if (list) list.push(idx);
+      else byFile.set(f, [idx]);
+    }
+  }
+  return { head, commits, byFile };
+}
+
+export interface LogCommit {
+  hash: string;
+  subject: string;
+  files: string[];
+}
+
+/** Recent non-merge commits, newest first, with their subject line and files (renames followed). Empty outside git. */
+export function loadCommitLog(root: string, maxCommits = 1500): LogCommit[] {
+  let raw: string;
+  try {
+    raw = git(root, ["log", "--no-merges", "--name-only", "--relative", "-M", "-n", String(maxCommits), "--format=%x1e%H%x1f%s"]);
+  } catch {
+    return [];
+  }
+  const log: LogCommit[] = [];
+  for (const chunk of raw.split("\x1e")) {
+    if (!chunk.trim()) continue;
+    const nl = chunk.indexOf("\n");
+    const [hash, subject] = (nl < 0 ? chunk : chunk.slice(0, nl)).split("\x1f");
+    const files = (nl < 0 ? "" : chunk.slice(nl + 1)).split("\n").map((l) => l.trim()).filter(Boolean);
+    log.push({ hash: hash.trim(), subject: subject ?? "", files });
+  }
+  return log;
+}
+
+/**
+ * Reads recent history. Returns null outside a git repo or in one without commits.
+ * See `buildHistory` for which commits are skipped.
  */
 export function loadHistory(root: string, maxCommits = 1500, maxFilesPerCommit = 40): History | null {
   const head = headOf(root);
@@ -56,19 +100,7 @@ export function loadHistory(root: string, maxCommits = 1500, maxFilesPerCommit =
   } catch {
     return null;
   }
-  const commits: string[][] = [];
-  const byFile = new Map<string, number[]>();
-  for (const chunk of raw.split("\x1e")) {
-    const files = chunk.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (files.length === 0 || files.length > maxFilesPerCommit) continue;
-    const idx = commits.push(files) - 1;
-    for (const f of files) {
-      const list = byFile.get(f);
-      if (list) list.push(idx);
-      else byFile.set(f, [idx]);
-    }
-  }
-  return { head, commits, byFile };
+  return buildHistory(raw.split("\x1e").map((chunk) => chunk.split("\n").map((l) => l.trim()).filter(Boolean)), head, maxFilesPerCommit);
 }
 
 export function coChangeFor(
