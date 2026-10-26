@@ -799,10 +799,10 @@ npm run build       # rebuild before trying `node dist/index.js`; dist/ is not r
 
 **CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `npm ci`, typecheck, build, tests and `npm run eval` on
 every push to `main` and every pull request, on `windows-latest` with Node 24: the one combination this project was
-built and checked on. The workflow has not run on GitHub yet. Its steps were run in a fresh clone of the committed code
-with no git identity configured, as on a runner: all passed, in about 2 minutes. Linux and macOS have not been tried
-(WSL is not installed here and Docker is in Windows-container mode), so they are not in the workflow; add them to a
-matrix after the suite has run there.
+built and checked on. It has run on GitHub twice, both green (the pull request and the push to `main`, 2026-10-26).
+Before that, its steps were run in a fresh clone of the committed code with no git identity configured, as on a runner:
+all passed, in about 2 minutes. Linux and macOS have not been tried (WSL is not installed here and Docker is in
+Windows-container mode), so they are not in the workflow; add them to a matrix after the suite has run there.
 
 **Add a language.** A row in `extract.ts` (symbol rules, import rule), an entry in `languages.ts`, a
 resolver case in `resolve.ts`, and tests in `tests/extract.test.ts` and `tests/graph.test.ts`.
