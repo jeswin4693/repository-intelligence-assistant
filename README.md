@@ -127,7 +127,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 280 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 282 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -192,7 +192,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 280 tests
+the prompt sets that check the role routing). All 282 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -285,8 +285,39 @@ less changes the picture.
 A stronger model may follow the roles more often unaided; a bigger repository may make the RIA tools matter more. The
 16 runs cost $1.40.
 
+**Plain Claude Code against Claude Code with RIA, on a real repository (2026-10-26).** The same four jobs, each run
+twice in each condition (16 runs), every one on a fresh clone of this repository (56 files, a 280-test suite), on the
+smallest model. The outcomes were checked afterwards by scripts that do not trust the chat: the new function's behaviour,
+typecheck, the whole suite, whether any test was edited, a checklist of facts in an explanation, and the list of files
+that use a renamed function.
+
+| Job | Correct, plain → RIA | Cost, plain → RIA | Time, plain → RIA | Gate started before the edit, plain → RIA |
+|---|---|---|---|---|
+| Write `wordCount` and its tests | 2 of 2 → 2 of 2 | $0.10 → $0.21 | 79 s → 167 s | 0 of 2 → 1 of 2 |
+| Fix a planted off-by-one in `reach` | 2 of 2 → 2 of 2 | $0.105 → $0.114 | 171 s → 233 s | 0 of 2 → 2 of 2 |
+| Explain how the gate decides its verdict (7-point checklist) | 1 of 2 → 2 of 2 | $0.09 → $0.11 | 21 s → 17 s | not applicable |
+| Find what breaks if `approxTokens` is renamed (4 files) | 2 of 2 → 2 of 2 | $0.04 → $0.07 | 18 s → 35 s | not applicable |
+
+The estimated cost of the 16 runs was $0.68 for plain and $1.02 with RIA (Claude Code's own price estimate, not a bill).
+How to read it. The outcomes are a tie: on small, easy jobs plain Claude Code already gets them right, and the single
+miss was one explanation that lacked one of seven facts, which two runs per cell cannot call a difference. What RIA
+changed is the process: the Fixer started a gate baseline before editing both times and checked afterwards, the Analyser
+called `impact` and `plan_score`, and plain Claude Code did neither. The price is about 50% more cost and, on the editing
+jobs, up to twice the time, mostly the gate running the 60-second suite twice and extra turns. On a clean repository
+with a fast, fully green suite that is largely repeated work, because the plain chat also ran the suite itself. The
+gate's real advantage, that only new failures count against a change, needs a repository that already has failing
+tests, which this comparison did not have. One RIA Writer run loaded the RIA tools eight times and never called one
+(the role was injected, but loading a deferred tool is not calling it); the hook's note now says how to load and call
+them, and that has not been re-measured. 16 runs, one small model, one small repository.
+
+The comparison also found a bug in the hook. Claude Code runs it for messages it delivers itself, such as the
+`<task-notification>` that reports a finished subagent, and the router read that report ("fixed", "extracts") as a
+request and injected the Autopilot into the conversation. The hook now ignores such messages, prompts that name a
+subagent (`agent_id`), and the editor's `<ide_...>` context in front of the typed text, with tests.
+
 **Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
-long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
+long gate run, any model other than the smallest Claude one, and a repository that already has failing tests. The
+history numbers come from one repository.
 
 ---
 
@@ -452,7 +483,9 @@ a section on switching role when the next request is a different kind of task.
 2. **A Claude Code hook that runs on every request** (`ria hook prompt`, installed by `ria init --hooks`). It adds
    a short note to the request: the role, why, and the role's brief. It reads only the text, writes nothing into
    the repository and answers in milliseconds; it never blocks a request. For "yes", "continue" or "commit this" it adds
-   nothing, so the chat keeps the role it has.
+   nothing, so the chat keeps the role it has. It routes only what a person typed: not the messages Claude Code
+   delivers itself (a finished subagent's report), not a subagent's prompt, and not the editor's context in front
+   of your text.
 3. **The skills and agents themselves.** Each carries a description in the words people type ("fix this", "where
    is", "refactor", "review my changes"), which is what Claude Code matches a request against, and each has a section on
    switching role when the request changes kind.
@@ -731,7 +764,8 @@ commands for start, check and rollback.
 | Parser (tree-sitter) behind the same extraction interface | Methods, multi-line signatures, and `import` text inside strings are the main source of wrong edges (this repository's own tests create 24 false gaps) |
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
-| Gate mode that runs only the tests tied to changed files | Large suites make the gate slow |
+| Gate mode that runs only the tests tied to changed files (plus typecheck) | Measured: the gate re-ran a 60-second suite twice per edit, so RIA's editing roles took up to twice as long as plain Claude Code on this repository ("Plain Claude Code against Claude Code with RIA"). The biggest cut to the overhead, and `impact` already knows which tests are tied |
+| A comparison on a repository that already has failing tests | The gate's main promise, that only new failures count, was not exercised by the clean repository used so far |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
@@ -792,7 +826,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 280 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 282 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

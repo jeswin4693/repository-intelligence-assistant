@@ -470,6 +470,8 @@ export function hookContext(route: Route): string | undefined {
     `RIA routing: this request looks like work for the ${role.title} role, confidence ${route.confidence}${why}.${alt}${unsure}`,
     `As the ${role.title}: ${role.brief}`,
     `The full steps are in the skill ria-${role.id}, or call the RIA tool start_task. When the next request is a different kind of task, switch to the role that fits it; a short reply such as "yes" keeps this one.`,
+    // found in a real run: the chat loaded start_task eight times and never called it
+    "RIA's tools are MCP tools named mcp__ria__<tool> (mcp__ria__start_task, mcp__ria__context_for, ...). If they are listed as deferred, load them once with ToolSearch (select:mcp__ria__start_task,mcp__ria__context_for), then call them: loading a tool is not calling it.",
   ].join("\n");
 }
 
