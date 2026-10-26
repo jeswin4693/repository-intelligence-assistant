@@ -118,7 +118,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 221 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 226 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -165,6 +165,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Rollback restores only what changed since the baseline, previews first | Work that was uncommitted before `gate_begin` survives; nothing destructive happens by accident |
 | Per-seed maximum, not a sum, when ranking `context_for` | A test that is both a dependent and "the test for" a file must not outrank the file itself |
 | Token budget binds everything except an explicitly requested target | The answer stays small, and asking for a big file by name still works (with a note) |
+| A best file or target that alone is over the budget is listed as an outline of its symbols, and only the outline is charged; a file with fewer than two symbols is charged in full | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading |
 | Run ids end in milliseconds plus random hex and are matched against an exact pattern | Runs sort in creation order, and an id from tool input can never become a path |
 | `core.longpaths=true` on every git call, short scratch file names | Deep folders (OneDrive) pass Windows' 260-character limit once git adds `.lock` files |
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
@@ -181,7 +182,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 221 tests
+Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 226 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -222,21 +223,27 @@ with `ria eval history`. The numbers describe that repository and nothing else.
 |---|---|---|
 | One file of a real commit is held out: did `impact` list it? (453 cases from 150 commits) | 39% | 5% for a list of the same length from the same folders, 0.3% at random |
 | ...through what | 16% git history alone, 11% import graph, 11% tied tests | |
-| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 42%, and 19% of the commit's files on average | 0.3% at random |
-| How much `context_for` returned | median about 7,900 tokens (0.05% of reading the whole repository); a third of the answers were over the 8,000-token budget | The best file is always returned, and some files in this repository are over 200,000 tokens |
+| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 52%, and 26% of the commit's files on average (42% and 19% before oversized files became outlines, same cases) | 0.3% at random |
+| How much `context_for` returned | median about 7,900 tokens (0.05% of reading the whole repository), mean about 7,800 (it was 44,600) | An oversized file counts as its outline, not as the file, so "over budget" is 0% by construction (it was a third of the answers); the chat can still read the whole file |
 | Does the `plan_score` of a change predict a fix on the same files within 10 commits better than file count does? (147 changes) | 61%, plus or minus 11 | 50%, plus or minus 11 for file count: not shown to be better |
 | The gate against 13 injected faults and fixes | 13 of 13 verdicts right, 13 of 13 rollbacks byte-exact | Cases the gate was built for, so a guard against regressions, not an independent test |
 
-Two things the measurements changed. A first reading of the `plan_score` check said it "adds something beyond size";
-the margin of error showed it does not yet, and the report now says that. And a guess that `impact` misses dependents
+Three things the measurements changed. A first reading of the `plan_score` check said it "adds something beyond size";
+the margin of error showed it does not yet, and the report now says that. A guess that `impact` misses dependents
 because it shows only 25 of them in alphabetical order was tested by showing 100 and then all of them: dependents
 went from 11.5% to 11.9%, so the cut-off is not the problem and ranking was left alone (only the tests list gains,
-from 11% to 17%).
+from 11% to 17%). And a one-file-at-a-time look at the tests list (2026-10-26) showed why: 173 of 453 questions had
+more than 25 tied tests, the held-out test was somewhere in the list in 79 of them (17%) and in the first 25 in 51
+(11%), and the lists where it was missed had a median of 155 tests. Ordering the list by co-change history, by
+closeness of path, or both moved the first-25 figure from 51 to at most 54, so nothing in the graph or the history
+separates those tests and the ordering was not kept.
 
-**Not verified yet:** use inside the real Copilot Chat or Claude Code interface (only a test client, and the role
-files have never been loaded by either host), behaviour against those hosts' tool-call timeouts, and whether a
-chat given a role actually follows it (that needs a model, which RIA does not have). The history numbers come from
-one repository.
+**Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
+[.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully.
+
+**Not verified yet:** Copilot Chat, the role files (neither host has loaded them), behaviour against those hosts'
+tool-call timeouts on a long gate run, and whether a chat given a role actually follows it (that needs a model, which
+RIA does not have). The history numbers come from one repository.
 
 ---
 
@@ -245,7 +252,7 @@ one repository.
 | Tool | Parameters | Use it to |
 |---|---|---|
 | `repo_map` | `max_tokens` (500-20000, default 4000), `focus` (directory) | Orient in an unfamiliar repo: languages, entry points, structure, most depended-on files and their symbols |
-| `context_for` | `target` (file or symbol), `query` (task in words), `max_files` (12), `max_tokens` (8000), `include_tests` (true) | Get the smallest ranked set of files to read, each with the reason it matters and a token estimate |
+| `context_for` | `target` (file or symbol), `query` (task in words), `max_files` (12), `max_tokens` (8000), `include_tests` (true) | Get the smallest ranked set of files to read, each with the reason it matters and a token estimate; a file bigger than the whole budget comes back as an outline of its symbols with line numbers |
 | `find_path` | `from`, `to` (file, suffix or symbol) | See the cheapest chain of imports between two things, with direction; falls back to co-change evidence |
 | `impact` | `files` (1-50), `depth` (1-6, default 3) | Before changing files: dependents, hidden coupling, tests, public symbols, risk score, confidence |
 | `plan_score` | `plans` (1-8, each a `name` and `files`; files not in the index count as new), `depth` (1-6, default 3) | When a task can be done several ways: rank the candidate plans by files changed, blast radius, missing tests, ignored coupling and reading cost, with the reasons, the tests to run and the confidence |
@@ -467,7 +474,10 @@ default root.
   dependencies (weight 0.6 to the power of the hop count), dependents (0.5 to the power of the hop count; both
   up to 2 hops), co-change partners (0.8 x confidence, from 30%), and tests (0.45). Each seed contributes its
   strongest link to a file once. Output is cut by file count
-  and token budget; symbols that matched the query are listed first.
+  and token budget; symbols that matched the query are listed first. The best file (or the requested target) is
+  always returned; when it alone is over the budget and has at least two symbols, it is returned as an outline
+  (up to 40 symbols in file order with line numbers, the query's matches always among them, the rest spread over
+  the file) and only the outline counts against the budget.
 - `impact` follows importers up to `depth` hops, adds co-change partners that do not import the file, ties tests
   by name or import, and scores risk transparently: 1 point per non-test dependent (max 20) + 2 per strong
   hidden coupling + 4 if no test is tied. Under 5 is low, under 12 medium, otherwise high.
@@ -574,8 +584,8 @@ commands for start, check and rollback.
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
 | Faster warm refresh (file watcher or `git status` fast path) | About 1 s per call at 4,700 files on OneDrive |
-| `context_for`: return an outline of the symbols with line numbers when the best file alone is far over the budget | A third of tasks on the measured repository got an answer over the budget, because the best file is always returned whole |
-| `impact`: show more of the tied tests, or rank them before cutting at 25 | Showing all of them found 17% of held-out files instead of 11% |
+| `context_for`: outline a related file (not only the best one or the target) that alone is over the budget | Today such a file is dropped; an outline would cost about 300 tokens and show where to read |
+| `impact`: show more of the tied tests | Showing all of them found 17% of held-out files instead of 11%, but the lists that matter have a median of 155 tests; ranking them did not help (see "Measured so far"), so this is a question of output size |
 | Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits |
 
 ---
@@ -588,7 +598,10 @@ commands for start, check and rollback.
 - Not resolved yet: `tsconfig` path aliases other than `@/`, `~/`, `#/`, monorepo workspace packages, and C#
   namespaces shared by more than 25 files (no edge is added for those).
 - `context_for` queries match file paths and symbol names, not file contents. Pair it with a content search
-  when the task is about specific text. A highly relevant file that does not fit the token budget is dropped.
+  when the task is about specific text. A highly relevant file that does not fit the token budget is dropped,
+  unless it is the best match or the requested target, which come back as an outline. An outline's cost is what
+  counts against the budget, not the file's: the chat is told to read only the part it needs, but RIA cannot make
+  it, and a file with a single huge symbol has no outline and is charged in full.
 - Coupling is blind to history before a rename, and needs git.
 - First index of a large repository is I/O-bound (about 6 s for 4,700 files on OneDrive); later starts use the
   cache, and each call re-checks the file list (about 1 s at that size).
@@ -617,7 +630,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 221 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 226 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

@@ -226,6 +226,109 @@ describe("contextFor", () => {
   });
 });
 
+describe("contextFor with a file too big for the budget", () => {
+  const fns = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `export function ${prefix}${i}() { return ${i}; }\n`).join("");
+  // the specifier is a variable so RIA's own gate does not read fixture text as a broken import of this repository
+  const importFn1 = (from: string) => `import { fn1 } from "${from}";\n`;
+  const BUDGET = 400;
+
+  function bigFixture(): string {
+    return makeRepo({
+      // ~1,500 tokens against a budget of 400; the symbol the query is about is the 121st of 151
+      "src/big.ts": `${fns(120, "fn")}export function needleFinder() { return 1; }\n${fns(30, "tail")}`,
+      "src/user.ts": `${importFn1("./big")}export const u = fn1();\n`,
+      "tests/big.test.ts": importFn1("../src/big"),
+      // one symbol: nothing to cut it by, so no outline
+      "src/lonely.ts": `export function lonely() {\n${"  // padding padding padding padding padding\n".repeat(60)}}\n`,
+    });
+  }
+
+  it("lists an outline of its symbols in file order and charges only that, so related files still fit", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { query: "needle finder", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      const big = r.items[0];
+      assert.equal(big.path, "src/big.ts");
+      assert.ok(big.tokens > BUDGET * 2, "the file itself is far over the budget");
+      assert.ok(big.outline, "an outline was made");
+      assert.ok(big.outline.entries.length <= 40);
+      const lines = big.outline.entries.map((e) => Number(/\(L(\d+)\)/.exec(e)?.[1]));
+      assert.deepEqual(lines, [...lines].sort((a, b) => a - b), "entries follow the file");
+      assert.ok(lines.at(-1)! > 130, "it covers the end of the file, not only the start");
+      assert.ok(big.outline.entries.some((e) => /needleFinder.*matches the query/.test(e)), "a symbol the query matched is always listed");
+      assert.equal(big.outline.more, 151 - big.outline.entries.length);
+      assert.ok(r.totalTokens <= BUDGET, `used ${r.totalTokens}`);
+      assert.deepEqual(r.items.slice(1).map((i) => i.path).sort(), ["src/user.ts", "tests/big.test.ts"], "the dependent and the test were not crowded out");
+      assert.match(r.notes.join(" "), /src\/big\.ts alone is ~\d+ tokens, over the 400 budget, so only its outline counts/);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("does the same for a file that was asked for by name", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { target: "src/big.ts", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      assert.equal(r.items[0].path, "src/big.ts");
+      assert.ok(r.items[0].outline);
+      assert.ok(r.items.length > 1);
+      assert.ok(r.totalTokens <= BUDGET);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("charges a file with a single symbol in full, as before, because an outline would hide its cost", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { target: "src/lonely.ts", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      assert.equal(r.items[0].outline, undefined);
+      assert.ok(r.totalTokens > BUDGET);
+      assert.match(r.notes.join(" "), /so it is included anyway/);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("does not outline a file that fits", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { target: "src/big.ts", maxTokens: 20000 });
+      assert.ok(!("error" in r));
+      assert.equal(r.items.some((i) => i.outline), false);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("prints the outline with its line numbers and what was left out", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { query: "needle finder", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      const text = formatContext(r, "q", BUDGET);
+      assert.match(text, /\(outline only, ~\d+ tok counted\)/);
+      assert.match(text, /outline, in file order \(\d+ more symbols not listed\):/);
+      assert.match(text, /function needleFinder \(L121\)  <- matches the query/);
+    } finally {
+      cleanup(d);
+    }
+  });
+});
+
 describe("repoMap", () => {
   it("summarises languages, entry points, structure and key files", () => {
     const text = repoMap(index, {});

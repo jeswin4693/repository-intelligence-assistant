@@ -97,7 +97,7 @@ export function createServer(index: RepoIndex): McpServer {
     {
       title: "Files worth reading for a task",
       description:
-        "Returns the smallest ranked set of files to read for a task, each with the reason it matters (imports it, imported by it, changes with it in git history, test for it) and a token estimate. Give a `target` file or symbol, a `query` describing the task, or both. Query matching covers file paths and symbol names, not file contents, so follow up with a content search when the query is about specific text.",
+        "Returns the smallest ranked set of files to read for a task, each with the reason it matters (imports it, imported by it, changes with it in git history, test for it) and a token estimate. Give a `target` file or symbol, a `query` describing the task, or both. Query matching covers file paths and symbol names, not file contents, so follow up with a content search when the query is about specific text. A file that alone is bigger than the budget comes back as an outline of its symbols with line numbers: read only the part you need.",
       inputSchema: {
         target: z.string().optional().describe("A file path, unique path suffix, or symbol name to centre the context on."),
         query: z.string().optional().describe("Task or topic in plain words, e.g. 'retry logic for payment webhooks'."),

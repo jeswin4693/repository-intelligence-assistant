@@ -12,6 +12,15 @@ export interface ContextOptions {
   includeTests?: boolean;
 }
 
+/** What to read instead of a file too big for the budget: its symbols in file order, with line numbers. */
+export interface Outline {
+  entries: string[];
+  /** Symbols of the file that are not listed. */
+  more: number;
+  /** What the outline itself costs to read; this is what counts against the budget. */
+  tokens: number;
+}
+
 export interface ContextItem {
   path: string;
   score: number;
@@ -19,7 +28,9 @@ export interface ContextItem {
   reasons: string[];
   symbols: string[];
   lines: number;
+  /** The whole file. For an item with an `outline`, only the outline counts against the budget. */
   tokens: number;
+  outline?: Outline;
 }
 
 export interface ContextResult {
@@ -111,6 +122,30 @@ interface Entry {
 
 const totalScore = (e: Entry) => [...e.perSeed.values()].reduce((a, b) => a + b, 0);
 
+const OUTLINE_SYMBOLS = 40;
+
+/** `n` items spread evenly over the list, so the outline covers the whole file and not only its start. */
+function spread<T>(xs: T[], n: number): T[] {
+  if (xs.length <= n) return xs;
+  return Array.from({ length: n }, (_, i) => xs[Math.floor((i * xs.length) / n)]);
+}
+
+/**
+ * Symbols that matched the query always make it in; the rest are top-level symbols spread over the file.
+ * A file with fewer than two symbols has nothing to cut it by, so it gets no outline.
+ */
+function outlineOf(rec: FileRecord, matched: SymbolInfo[]): Outline | undefined {
+  if (rec.symbols.length < 2) return undefined;
+  const chosen = new Set(matched.slice(0, OUTLINE_SYMBOLS));
+  const topLevel = rec.symbols.filter((s) => s.kind !== "method" && !chosen.has(s));
+  const pool = topLevel.length > 0 ? topLevel : rec.symbols.filter((s) => !chosen.has(s));
+  for (const s of spread(pool, OUTLINE_SYMBOLS - chosen.size)) chosen.add(s);
+  const entries = [...chosen]
+    .sort((a, b) => a.line - b.line)
+    .map((s) => `${fmtSymbol(s, true)}${matched.includes(s) ? "  <- matches the query" : ""}`);
+  return { entries, more: rec.symbols.length - entries.length, tokens: approxTokens(Buffer.byteLength(entries.join("\n"))) };
+}
+
 export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResult | { error: string } {
   const maxFiles = opts.maxFiles ?? 12;
   const maxTokens = opts.maxTokens ?? 8000;
@@ -186,14 +221,20 @@ export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResul
     // The budget binds everything except what was asked for by name, and the
     // single best file when nothing else fits, so the answer is never empty.
     const mustInclude = p === targetPath || items.length === 0;
-    if (!mustInclude && (items.length >= maxFiles || total + tokens > maxTokens)) {
+    // Such a file that alone does not fit is listed as an outline, and only the outline is charged,
+    // so one huge file does not use up the budget the related files need.
+    const outline = mustInclude && tokens > maxTokens ? outlineOf(rec, matchedSymbols.get(p) ?? []) : undefined;
+    const cost = outline ? outline.tokens : tokens;
+    if (!mustInclude && (items.length >= maxFiles || total + cost > maxTokens)) {
       truncated = true;
       continue;
     }
-    if (mustInclude && total + tokens > maxTokens) {
+    if (outline) {
+      notes.push(`${p} alone is ~${tokens} tokens, over the ${maxTokens} budget, so only its outline counts against the budget; read just the part you need, using the line numbers.`);
+    } else if (mustInclude && total + cost > maxTokens) {
       notes.push(`${p} alone is ~${tokens} tokens, over the ${maxTokens} budget, so it is included anyway; use its symbol line numbers to read only the part you need.`);
     }
-    total += tokens;
+    total += cost;
     const matched = (matchedSymbols.get(p) ?? []).slice(0, 5);
     const rest = pickSymbols(rec, 8).filter((s) => !matched.includes(s));
     items.push({
@@ -204,6 +245,7 @@ export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResul
       symbols: [...matched, ...rest].slice(0, 8).map((s) => fmtSymbol(s, true)),
       lines: rec.lines,
       tokens,
+      ...(outline ? { outline } : {}),
     });
   }
   return { items, notes, truncated, totalTokens: total };
@@ -213,9 +255,13 @@ export function formatContext(r: ContextResult, label: string, maxTokens: number
   if (r.items.length === 0) return [`No context found for ${label}.`, ...r.notes].join("\n");
   const lines = [`Context for ${label}: ${r.items.length} files, ~${r.totalTokens} tokens (budget ${maxTokens})${r.truncated ? ", more omitted by budget" : ""}`];
   r.items.forEach((it, i) => {
-    lines.push(`${i + 1}. ${it.path}  [${it.roles.join(", ")}]  score ${it.score}  ${it.lines} lines, ~${it.tokens} tok`);
+    lines.push(`${i + 1}. ${it.path}  [${it.roles.join(", ")}]  score ${it.score}  ${it.lines} lines, ~${it.tokens} tok${it.outline ? ` (outline only, ~${it.outline.tokens} tok counted)` : ""}`);
     for (const reason of it.reasons) lines.push(`     - ${reason}`);
-    if (it.symbols.length) lines.push(`     symbols: ${it.symbols.join(", ")}`);
+    if (it.outline) {
+      const o = it.outline;
+      lines.push(`     outline, in file order${o.more > 0 ? ` (${o.more} more symbols not listed)` : ""}:`);
+      for (const e of o.entries) lines.push(`       ${e}`);
+    } else if (it.symbols.length) lines.push(`     symbols: ${it.symbols.join(", ")}`);
   });
   for (const n of r.notes) lines.push(`Note: ${n}`);
   return lines.join("\n");
