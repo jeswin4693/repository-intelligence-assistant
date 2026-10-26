@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import { reach } from "../repo/graph";
 import { RepoIndex } from "../repo/repo-index";
-import { pct, plural, previewSymbols, resolveOrExplain, testsFor } from "./shared";
+import { byDirectory, pct, plural, previewSymbols, resolveOrExplain, testsFor } from "./shared";
 
 export interface ImpactOptions {
   files: string[];
@@ -28,8 +28,8 @@ export interface ImpactResult {
 }
 
 /** Co-changing files weaker than this are coincidence more often than coupling. */
-const MIN_COUPLING = 0.3;
-const STRONG_COUPLING = 0.5;
+export const MIN_COUPLING = 0.3;
+export const STRONG_COUPLING = 0.5;
 
 export function impact(index: RepoIndex, opts: ImpactOptions): ImpactResult | { error: string } {
   const depth = opts.depth ?? 3;
@@ -115,16 +115,6 @@ export function impact(index: RepoIndex, opts: ImpactOptions): ImpactResult | { 
 
 const LIST_LIMIT = 25;
 const more = (n: number) => (n > LIST_LIMIT ? [`  ... and ${n - LIST_LIMIT} more`] : []);
-
-/** `tests/auth (40), tests/billing (12)`: where a long list of files is concentrated. */
-function byDirectory(paths: string[], depth = 2): string {
-  const counts = new Map<string, number>();
-  for (const p of paths) {
-    const dir = p.split("/").slice(0, -1).slice(0, depth).join("/") || ".";
-    counts.set(dir, (counts.get(dir) ?? 0) + 1);
-  }
-  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 6).map(([d, n]) => `${d} (${n})`).join(", ");
-}
 
 export function formatImpact(r: ImpactResult, depth: number): string {
   const out: string[] = [];

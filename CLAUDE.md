@@ -1,16 +1,17 @@
 # CLAUDE.md: Repository Intelligence Assistant (RIA)
 
-RIA is an MCP server and CLI that gives AI chats repo navigation (`repo_map`, `context_for`, `find_path`, `impact`)
-and a change gate (`gate_begin`, `gate_check`, `gate_rollback`). No LLM, no API key, any language.
+RIA is an MCP server and CLI that gives AI chats repo navigation (`repo_map`, `context_for`, `find_path`, `impact`),
+plan scoring (`plan_score`) and a change gate (`gate_begin`, `gate_check`, `gate_rollback`). No LLM, no API key, any language.
 **The full plan, architecture, status and roadmap are in [README.md](README.md). Read it before changing anything.**
 
-Status: steps 1 (navigation) and 2 (change gate) are built; step 3 `plan_score` is next.
+Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack and `ria init`) and 6 (eval harness) are built; step 5 (skill forge) is next.
 
 ## Commands
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 149 tests, about 40 s
+npm test            # 239 tests, about 1 min
+npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
 

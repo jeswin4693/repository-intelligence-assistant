@@ -35,6 +35,23 @@ describe("RepoIndex", () => {
     assert.equal(second.graph().out.size, 0);
   });
 
+  it("looks up git HEAD once per refresh, and sees new commits at the next refresh", () => {
+    const dir = repo({ "a.ts": `export const a = 1;\n`, "b.ts": `export const b = 1;\n` });
+    gitInit(dir);
+    commit(dir, "initial");
+    const index = new RepoIndex(dir, { cache: false });
+    index.refresh();
+    const first = index.history();
+    assert.equal(first?.commits.length, 1);
+    assert.equal(index.history(), first, "same history object while nothing was refreshed");
+
+    commit(dir, "more", { "a.ts": `export const a = 2;\n`, "b.ts": `export const b = 2;\n` });
+    assert.equal(index.history(), first, "a call sees the repository as of its refresh");
+    index.refresh();
+    assert.equal(index.history()?.commits.length, 2);
+    assert.deepEqual(index.coChange("a.ts").map((c) => [c.path, c.support]), [["b.ts", 2]]);
+  });
+
   it("keeps its cache directory out of git status", () => {
     const dir = repo({ "a.ts": `export const a = 1;\n` });
     gitInit(dir);
