@@ -108,7 +108,7 @@ describe("roles", () => {
 
   it("gives the autopilot the whole loop, and the habit of asking only when a decision is needed", () => {
     const autopilot = ROLES.find((r) => r.id === "autopilot")!;
-    assert.deepEqual([...autopilot.tools].sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map"]);
+    assert.deepEqual([...autopilot.tools].sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "start_task"]);
     assert.ok(autopilot.edits);
     const steps = autopilot.steps.join("\n");
     for (const tool of ["repo_map", "context_for", "impact", "plan_score", "gate_begin", "gate_check"]) assert.match(steps, new RegExp(`\`${tool}\``), tool);
@@ -151,6 +151,62 @@ describe("roles", () => {
     const all = JSON.stringify(ROLES);
     assert.doesNotMatch(all, /Business Central|Made2Manage|M2M|\bAL\b/);
   });
+
+  it("describes each role in the words a user types, so a host can match a request to it", () => {
+    for (const r of ROLES) {
+      const quoted = r.description.match(/"[^"]+"/g) ?? [];
+      assert.ok(quoted.length >= 3, `${r.id} description quotes at least three phrases a user would say`);
+      assert.ok(r.description.length <= 400, `${r.id} description is ${r.description.length} characters`);
+    }
+    const words = (id: string) => (ROLES.find((r) => r.id === id)!.description.match(/"([^"]+)"/g) ?? []).join(" ");
+    assert.match(words("writer"), /create.*add.*build/s);
+    assert.match(words("fixer"), /fix this/);
+    assert.match(words("reader"), /explain.*where is/s);
+    assert.match(words("extractor"), /refactor.*extract.*split/s);
+  });
+
+  it("lets every role ask RIA which role a request needs, and keeps its brief to tools it may call", () => {
+    for (const r of ROLES) {
+      assert.ok(r.tools.includes("start_task"), `${r.id} may call start_task`);
+      for (const t of ["repo_map", "context_for", "find_path", "impact", "plan_score", "gate_begin", "gate_check", "gate_rollback"] as const) {
+        if (new RegExp(`\`${t}\``).test(r.brief)) assert.ok(r.tools.includes(t), `${r.id} brief mentions ${t} but may not call it`);
+      }
+      if (!r.edits) assert.doesNotMatch(r.brief, /gate_begin|gate_check/, `${r.id} does not edit, so its brief starts no gate`);
+    }
+  });
+
+  it("tells the roles that read to say so rather than edit, and the roles that edit to start from a baseline and check the result", () => {
+    for (const r of ROLES.filter((x) => !x.edits)) assert.match(r.brief, /^Do not edit\./, r.id);
+    for (const r of ROLES.filter((x) => x.edits && x.id !== "autopilot")) assert.match(r.brief, /gate_begin/, r.id);
+    assert.match(ROLES.find((r) => r.id === "writer")!.brief, /never overwrite an existing path/);
+    assert.match(ROLES.find((r) => r.id === "extractor")!.brief, /characterization test/);
+    assert.match(ROLES.find((r) => r.id === "fixer")!.brief, /Never weaken a test/);
+  });
+
+  it("gives the Writer, the Fixer and the Extractor the checks that make their work trustworthy", () => {
+    const by = (id: string) => ROLES.find((r) => r.id === id)!;
+    const writer = by("writer").steps.join("\n");
+    assert.match(writer, /closest existing example/);
+    assert.match(writer, /If the path already exists, do not overwrite it/);
+    assert.match(writer, /Find where new code has to be registered/);
+    assert.match(writer, /no stubs or TODO placeholders/);
+    assert.match(by("writer").stop[0], /number of tests that ran went up by the ones you added/);
+
+    const fixer = by("fixer").steps.join("\n");
+    assert.match(fixer, /Find the cause, not the symptom/);
+    assert.match(fixer, /that is your reproduction/);
+    assert.match(fixer, /test that fails without the fix/);
+    assert.match(by("fixer").report.join("\n"), /same bug and that you did not change/);
+
+    const extractor = by("extractor").steps.join("\n");
+    assert.match(extractor, /If no test is tied to the code/);
+    assert.match(extractor, /Search the text for the old path and old names/);
+
+    assert.match(by("analyser").steps.join("\n"), /including the one that touches the fewest files/);
+    assert.match(by("analyser").report.join("\n"), /evidence, not proof/);
+    assert.match(by("reviewer").steps.join("\n"), /blocker .* major, minor or nit/s);
+    assert.match(by("reader").steps.join("\n"), /Who uses it: `impact`/);
+  });
 });
 
 describe("rendering", () => {
@@ -171,7 +227,7 @@ describe("rendering", () => {
     const by = (id: string) => ROLES.find((r) => r.id === id)!;
     const reader = frontmatter(copilotAgent(by("reader")));
     assert.equal(reader.name, "RIA Reader");
-    assert.deepEqual(reader.tools, ["read", "search", "ria/repo_map", "ria/context_for", "ria/find_path"]);
+    assert.deepEqual(reader.tools, ["read", "search", "ria/start_task", "ria/repo_map", "ria/context_for", "ria/find_path", "ria/impact"]);
 
     const writer = frontmatter(copilotAgent(by("writer"))).tools as string[];
     assert.ok(writer.includes("edit") && writer.includes("ria/gate_begin") && writer.includes("ria/plan_score"));
@@ -184,6 +240,24 @@ describe("rendering", () => {
     // an agent with only MCP tools fails on some backends in VS Code
     for (const r of ROLES) assert.ok((frontmatter(copilotAgent(r)).tools as string[]).includes("read"), r.id);
     assert.equal(copilotAgentPath(by("fixer")), ".github/agents/ria-fixer.agent.md");
+  });
+
+  it("gives every skill and agent the shared sections on working efficiently and on switching roles", () => {
+    for (const r of ROLES) {
+      for (const text of [claudeSkill(r), copilotAgent(r)]) {
+        assert.match(text, /\n## Work efficiently\n/, r.id);
+        assert.match(text, /\n## When the task changes kind\n/, r.id);
+        assert.ok(text.indexOf("## Report") < text.indexOf("## Work efficiently") && text.indexOf("## Work efficiently") < text.indexOf("## Limits"), `${r.id} section order`);
+        assert.match(text, /call it with the request to get the role and its steps/);
+        assert.match(text, /A short reply such as "yes" or "continue" keeps the current role/);
+      }
+    }
+    // a role that cannot edit is told to hand over, and is not told about a tool it does not have
+    const reader = claudeSkill(ROLES.find((r) => r.id === "reader")!);
+    assert.match(reader, /This role cannot edit\. When the request needs a change, say which role fits and ask the user to switch/);
+    assert.doesNotMatch(reader.split("## Work efficiently")[1].split("## Limits")[0], /plan_score/);
+    assert.doesNotMatch(claudeSkill(ROLES.find((r) => r.id === "writer")!), /This role cannot edit/);
+    assert.match(claudeSkill(ROLES.find((r) => r.id === "writer")!), /`impact` takes up to 50 files in one call and `plan_score` up to 8 plans/);
   });
 
   it("quotes headers so a colon or a quote in a description cannot break them", () => {

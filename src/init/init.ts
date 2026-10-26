@@ -15,6 +15,8 @@ export interface InitOptions {
   force?: boolean;
   /** Path of this install's `dist/index.js`. Default: found from this file. Mainly for tests. */
   entry?: string;
+  /** Claude Code only: also register the hooks that pick the role for each request and hold the chat to the gate. */
+  hooks?: boolean;
 }
 
 export interface InitAction {
@@ -90,12 +92,97 @@ function planMcp(root: string, rel: string, key: "mcpServers" | "servers", entry
   };
 }
 
+/**
+ * Personal and not meant for git: the hooks run a command on every request, and the command names this machine's
+ * RIA folder. Claude Code reads it next to the shared `.claude/settings.json`.
+ */
+export const HOOKS_FILE = ".claude/settings.local.json";
+
+interface HookSpec {
+  event: "UserPromptSubmit" | "Stop";
+  verb: "prompt" | "stop";
+  /** Seconds. The prompt hook only reads text; the stop hook re-runs the project's checks, which can be slow. */
+  timeout: number;
+}
+const HOOKS: HookSpec[] = [
+  { event: "UserPromptSubmit", verb: "prompt", timeout: 10 },
+  { event: "Stop", verb: "stop", timeout: 1200 },
+];
+
+/** Claude Code's exec form (`command` plus `args`): no shell, so a path with spaces needs no quoting on Windows. */
+function hookHandler(spec: HookSpec, opts: InitOptions, entry: string): Record<string, unknown> {
+  const launch = opts.onPath ? { command: "ria", args: [] as string[] } : { command: "node", args: [entry] };
+  return { type: "command", command: launch.command, args: [...launch.args, "hook", spec.verb], timeout: spec.timeout };
+}
+
+/** Whether a configured handler is RIA's hook for `verb`, however it was written (exec form, or shell text). */
+function isRiaHook(handler: unknown, verb: string): boolean {
+  if (!isObject(handler)) return false;
+  const args = Array.isArray(handler.args) ? handler.args.map(String) : [];
+  if (args.length >= 2 && args[args.length - 2] === "hook" && args[args.length - 1] === verb) return true;
+  return typeof handler.command === "string" && new RegExp(`\\bhook ${verb}\\b`).test(handler.command) && /\bria\b|dist[\\/]index\.js/.test(handler.command);
+}
+
+/** Adds RIA's two hooks to `.claude/settings.local.json`, keeping every other setting and hook in it. */
+function planHooks(root: string, opts: InitOptions, entry: string, force: boolean): InitAction {
+  const abs = path.join(root, HOOKS_FILE);
+  const wanted = (s: HookSpec) => hookHandler(s, opts, entry);
+  const snippet = JSON.stringify({ hooks: Object.fromEntries(HOOKS.map((s) => [s.event, [{ hooks: [wanted(s)] }]])) }, null, 2);
+  if (!fs.existsSync(abs)) return { path: HOOKS_FILE, kind: "create", detail: "registers the routing hook and the gate hook", content: snippet + "\n" };
+
+  const manual = (why: string): InitAction => ({ path: HOOKS_FILE, kind: "manual", detail: `${why}. Add this by hand:\n${snippet.replace(/^/gm, "      ")}` });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(abs, "utf8").replace(/^﻿/, ""));
+  } catch {
+    return manual("could not read it as plain JSON (comments are not rewritten)");
+  }
+  if (!isObject(parsed) || (parsed.hooks !== undefined && !isObject(parsed.hooks))) return manual('it has no usable "hooks" object');
+
+  const next: Record<string, unknown> = { ...((parsed.hooks as Record<string, unknown> | undefined) ?? {}) };
+  let changed = false;
+  const kept: string[] = [];
+  for (const s of HOOKS) {
+    const current = next[s.event];
+    if (current !== undefined && !Array.isArray(current)) return manual(`"hooks.${s.event}" is not a list`);
+    const groups: unknown[] = current ? [...current] : [];
+    let at: [number, number] | undefined;
+    groups.forEach((g, gi) => {
+      if (isObject(g) && Array.isArray(g.hooks)) g.hooks.forEach((h, hi) => void (at === undefined && isRiaHook(h, s.verb) && (at = [gi, hi])));
+    });
+    if (at === undefined) {
+      groups.push({ hooks: [wanted(s)] });
+      changed = true;
+    } else if (JSON.stringify((groups[at[0]] as { hooks: unknown[] }).hooks[at[1]]) !== JSON.stringify(wanted(s))) {
+      if (!force) {
+        kept.push(s.event);
+        continue;
+      }
+      const group = groups[at[0]] as { hooks: unknown[] };
+      group.hooks = group.hooks.map((h, hi) => (hi === at![1] ? wanted(s) : h));
+      changed = true;
+    }
+    next[s.event] = groups;
+  }
+  if (!changed) {
+    return kept.length
+      ? { path: HOOKS_FILE, kind: "skip", detail: `a RIA hook for ${kept.join(" and ")} is already configured differently, so it is kept (--force replaces only that entry)` }
+      : { path: HOOKS_FILE, kind: "unchanged", detail: "the RIA hooks are already registered this way" };
+  }
+  return {
+    path: HOOKS_FILE,
+    kind: "update",
+    detail: `adds the RIA hooks next to your other settings and hooks${kept.length ? ` (${kept.join(" and ")} kept as it was)` : ""} (the file is rewritten with 2-space indentation)`,
+    content: JSON.stringify({ ...parsed, hooks: next }, null, 2) + "\n",
+  };
+}
+
 /** Works out what `ria init` would do. Writes nothing. */
 export function planInit(root: string, opts: InitOptions): InitPlan | { error: string } {
   if (!["claude", "copilot", "both"].includes(opts.host)) return { error: `Unknown host "${opts.host}". Use claude, copilot or both.` };
   let roles: Role[] = ROLES;
   if (opts.roles) {
-    const unknown = opts.roles.filter((r) => !ROLE_IDS.includes(r));
+    const unknown = opts.roles.filter((r) => !(ROLE_IDS as string[]).includes(r));
     if (unknown.length) return { error: `Unknown role ${unknown.map((r) => `"${r}"`).join(", ")}. Roles: ${ROLE_IDS.join(", ")}.` };
     roles = ROLES.filter((r) => opts.roles!.includes(r.id));
   }
@@ -108,6 +195,7 @@ export function planInit(root: string, opts: InitOptions): InitPlan | { error: s
   if (claude) {
     actions.push(planMcp(root, ".mcp.json", "mcpServers", serverEntry("claude", opts, entry), force));
     for (const r of roles) actions.push(planFile(root, claudeSkillPath(r), claudeSkill(r), force));
+    if (opts.hooks) actions.push(planHooks(root, opts, entry, force));
   }
   if (copilot) {
     actions.push(planMcp(root, ".vscode/mcp.json", "servers", serverEntry("copilot", opts, entry), force));
@@ -120,6 +208,10 @@ export function planInit(root: string, opts: InitOptions): InitPlan | { error: s
     notes.push(`The MCP config names this machine's RIA folder (${entry}). If the repository is shared, install RIA so that \`ria\` is on the PATH and run this again with --on-path.`);
   }
   if (claude) notes.push("Claude Code asks you to approve a project .mcp.json server the first time. The roles are skills under .claude/skills.");
+  if (claude && opts.hooks) {
+    notes.push(`The hooks run RIA on every request (to tell the chat which role it needs) and every time the chat is about to finish (to hold it to the gate). They are written to ${HOOKS_FILE}, which is personal: keep it out of git.`);
+  }
+  if (opts.hooks && !claude) notes.push("--hooks is for Claude Code. Copilot Chat has no hook RIA uses: there the roles are agents you pick, and the start_task tool.");
   if (copilot) {
     notes.push("VS Code asks you to review and trust an MCP server before it runs. The roles appear in the agents dropdown; read-only roles are not given an edit tool.");
     notes.push("Copilot Chat can only be instructed: a model can ignore a role's steps. The allow-list of tools is the part that is enforced.");
