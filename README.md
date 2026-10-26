@@ -681,6 +681,13 @@ npm run eval        # the gate against 13 injected faults; exit code 1 if a verd
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
 
+**CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `npm ci`, typecheck, build, tests and `npm run eval` on
+every push to `main` and every pull request, on `windows-latest` with Node 24: the one combination this project was
+built and checked on. The workflow has not run on GitHub yet. Its steps were run in a fresh clone of the committed code
+with no git identity configured, as on a runner: all passed, in about 2 minutes. Linux and macOS have not been tried
+(WSL is not installed here and Docker is in Windows-container mode), so they are not in the workflow; add them to a
+matrix after the suite has run there.
+
 **Add a language.** A row in `extract.ts` (symbol rules, import rule), an entry in `languages.ts`, a
 resolver case in `resolve.ts`, and tests in `tests/extract.test.ts` and `tests/graph.test.ts`.
 **Add a gate parser.** Test counts go in `COUNT_PARSERS`, failed-test names in `FAILED_TEST_PATTERNS`, and

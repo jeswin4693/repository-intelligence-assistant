@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# a new push to the same branch or pull request makes the older run pointless
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck, build, test, gate eval
+    # Windows and Node 24 are what this project was built and checked on. Linux and macOS have not been tried:
+    # add them to a matrix once the suite has been run there, not before.
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # the MCP configs and `node dist/index.js` use the build, so a broken build must fail here
+      - run: npm run build
+      - run: npm test
+      # the gate against injected faults: exits 1 if a verdict or a byte-exact rollback is wrong
+      - run: npm run eval
