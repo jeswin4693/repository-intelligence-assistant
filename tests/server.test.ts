@@ -39,10 +39,10 @@ after(async () => {
 describe("MCP server over stdio", () => {
   it("advertises the tools, marking only the navigation ones read-only, with guidance for the model", async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "start_task"]);
     for (const t of tools) {
       assert.ok((t.description ?? "").length > 40, `${t.name} needs a real description`);
-      const navigation = ["context_for", "find_path", "impact", "plan_score", "repo_map"].includes(t.name);
+      const navigation = ["context_for", "find_path", "impact", "plan_score", "repo_map", "start_task"].includes(t.name);
       assert.equal(t.annotations?.readOnlyHint, navigation, t.name);
     }
     const rollback = tools.find((t) => t.name === "gate_rollback");
@@ -50,6 +50,39 @@ describe("MCP server over stdio", () => {
     assert.equal(tools.find((t) => t.name === "gate_begin")?.annotations?.destructiveHint, false);
     assert.match(client.getInstructions() ?? "", /gate_begin/);
     assert.match(client.getInstructions() ?? "", /plan_score/);
+    assert.match(client.getInstructions() ?? "", /At the start of every new request from the user: start_task/, "the server tells every chat to route first");
+  });
+
+  it("start_task picks the role from the request and returns its steps", async () => {
+    const fix = text(await client.callTool({ name: "start_task", arguments: { task: "fix the failing test in tests/a.test.ts" } }));
+    assert.match(fix, /^RIA routing: Fixer \(fixer\), confidence (high|medium)/);
+    assert.match(fix, /Because: .*fix/);
+    assert.match(fix, /## Steps/);
+    assert.match(fix, /`gate_begin` before the first edit/);
+    assert.match(fix, /## When the task changes kind/);
+
+    const read = text(await client.callTool({ name: "start_task", arguments: { task: "explain how src/a.ts uses src/b.ts" } }));
+    assert.match(read, /^RIA routing: Reader \(reader\)/);
+    assert.match(read, /This role does not edit files\./);
+    assert.doesNotMatch(read, /gate_begin/, "a read-only role is not told to start a gate");
+  });
+
+  it("start_task checks the paths a request names against the repository", async () => {
+    const create = text(await client.callTool({ name: "start_task", arguments: { task: "create src/brand-new.ts with a helper" } }));
+    assert.match(create, /Writer/);
+    assert.match(create, /names src\/brand-new\.ts, which is not in the repository/);
+
+    const typo = text(await client.callTool({ name: "start_task", arguments: { task: "explain how src/nope.ts works" } }));
+    assert.match(typo, /"src\/nope\.ts" is not in the repository: a typo, or a file to create\?/);
+
+    const existing = text(await client.callTool({ name: "start_task", arguments: { task: "create src/a.ts with a helper" } }));
+    assert.match(existing, /"src\/a\.ts" already exists: do not overwrite it without asking/);
+  });
+
+  it("start_task says when a request is not a new task", async () => {
+    const r = text(await client.callTool({ name: "start_task", arguments: { task: "yes, go ahead" } }));
+    assert.match(r, /does not look like a new task/);
+    assert.doesNotMatch(r, /## Steps/);
   });
 
   it("repo_map describes the served repository", async () => {

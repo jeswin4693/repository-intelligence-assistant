@@ -11,8 +11,10 @@ import { findPath, formatPath } from "./tools/find-path";
 import { formatImpact, impact } from "./tools/impact";
 import { formatPlanScore, planScore } from "./tools/plan-score";
 import { repoMap } from "./tools/repo-map";
+import { startTask } from "./tools/route";
 
 const INSTRUCTIONS = `RIA gives you a precomputed map of the repository: symbols, an import graph and git co-change history. Prefer it to opening many files.
+- At the start of every new request from the user: start_task with the request in their own words. It works out what kind of task it is (writer: something new; fixer: a bug or failing check; reader: understand or find; analyser: options or risk; extractor: move or restructure without changing behaviour; reviewer: check a diff; autopilot: a whole task or several kinds) and returns that role's steps. Follow them. When the next request is a different kind of task, switch role. A short reply such as "yes" or "continue" keeps the current role.
 - Orient in an unfamiliar repo: repo_map.
 - Before reading or editing for a task: context_for with the task text and/or a file, then read only what it returns.
 - Before changing a file: impact, and re-read the files and tests it lists after the change.
@@ -76,6 +78,20 @@ export function createServer(index: RepoIndex): McpServer {
   const server = new McpServer({ name: "ria", version: version() }, { instructions: INSTRUCTIONS });
   const readOnly = { readOnlyHint: true, openWorldHint: false };
   const runsCommands = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+  server.registerTool(
+    "start_task",
+    {
+      title: "Pick the role for a task",
+      description:
+        "Call this FIRST for every new request from the user, with their request in their own words. It works out what kind of task it is (something new to create, a bug or failing check to fix, code to understand or find, options or risk to judge, code to move or restructure without changing behaviour, a diff to review, or a whole task or several kinds at once) and returns the role to act as, why, and that role's steps, stop conditions and report. Follow them. Skip it for a short follow-up such as \"yes\" or \"continue\", which keeps the current role. It reads the wording of the request and checks whether the paths it names exist; that is a heuristic, so use your own judgement when the conversation says the request is something else, and say which role you chose.",
+      inputSchema: {
+        task: z.string().min(1).max(4000).describe("The user's request, in their own words."),
+      },
+      annotations: readOnly,
+    },
+    async ({ task }) => guarded(index, () => startTask(index, task)),
+  );
 
   server.registerTool(
     "repo_map",

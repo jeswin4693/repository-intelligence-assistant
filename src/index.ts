@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { evaluateGate, formatGateEval } from "./eval/gate-eval";
 import { evaluateHistory, formatHistoryEval } from "./eval/history-eval";
 import { gateBegin, gateCheck, gateRollback } from "./gate/gate";
+import { parsePromptInput, promptHookOutput } from "./hooks/prompt";
 import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
@@ -14,6 +15,7 @@ import { findPath, formatPath } from "./tools/find-path";
 import { formatImpact, impact } from "./tools/impact";
 import { formatPlanScore, parsePlanArg, planScore } from "./tools/plan-score";
 import { repoMap } from "./tools/repo-map";
+import { formatRoute, pathEvidence, routeTask } from "./tools/route";
 
 const USAGE = `Repository Intelligence Assistant
 
@@ -28,13 +30,15 @@ Commands:
   impact <file...>            What a change would touch        [--depth <n>]
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
   init --host claude|copilot|both   Install the MCP config and the role files into --root; preview unless --apply
-                              [--roles reader,fixer] [--on-path] [--force] [--apply]
+                              [--roles reader,fixer] [--on-path] [--force] [--hooks] [--apply]
   eval history                Replay the repository's own git history against the tools (read-only)  [--commits <n>] [--max-files <n>]
                               [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
   gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
+  route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
+  hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
   hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
                               (reads the hook JSON on stdin)  [--max-blocks <n>] [--max-age-hours <n>]
 
@@ -87,6 +91,7 @@ function main(): void | Promise<void> {
       roles: { type: "string" },
       "on-path": { type: "boolean" },
       force: { type: "boolean" },
+      hooks: { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       label: { type: "string" },
@@ -144,6 +149,7 @@ function main(): void | Promise<void> {
       roles: values.roles?.split(",").map((s) => s.trim()).filter(Boolean),
       onPath: values["on-path"],
       force: values.force,
+      hooks: values.hooks,
     });
     if ("error" in plan) throw new Error(plan.error);
     const written = values.apply ? applyInit(root, plan) : 0;
@@ -151,8 +157,14 @@ function main(): void | Promise<void> {
     return;
   }
 
+  if (command === "hook" && args[0] === "prompt") {
+    // text only: no index, so a hook that runs on every request writes nothing into the repository
+    const out = promptHookOutput(parsePromptInput(readStdin()));
+    if (out) process.stdout.write(`${out}\n`);
+    return;
+  }
   if (command === "hook") {
-    if (args[0] !== "stop") throw new Error("hook needs a subcommand: stop");
+    if (args[0] !== "stop") throw new Error("hook needs a subcommand: prompt or stop");
     // before the index exists: with no gate run to enforce, the hook must not write a .ria/ cache into the repository
     const raw = readStdin();
     return decideStop(root, parseStopInput(raw), {
@@ -198,6 +210,12 @@ function main(): void | Promise<void> {
       const r = impact(index, { files: args, depth });
       if ("error" in r) return fail(r.error);
       return print(r, formatImpact(r, depth ?? 3));
+    }
+    case "route": {
+      const task = args.join(" ").trim();
+      if (!task) fail('route needs the request in words, for example: route "fix the failing test in cart.ts"');
+      const r = routeTask(task, pathEvidence(index, task));
+      return print(r, formatRoute(r));
     }
     case "plan": {
       if (!values.plan?.length) fail('plan needs at least one --plan "Name=file1,file2"');

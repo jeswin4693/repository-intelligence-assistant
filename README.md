@@ -36,9 +36,15 @@ safety inspector.
 The loop an AI chat follows with RIA:
 
 ```text
-orient  ->  find the right files  ->  compare plans  ->  gate_begin  ->  edit  ->  gate_check  ->  fix or gate_rollback
-repo_map    context_for / impact      plan_score         baseline        chat     better/worse     undo if needed
+pick the role -> orient  ->  find the right files  ->  compare plans  ->  gate_begin  ->  edit  ->  gate_check  ->  fix or gate_rollback
+start_task       repo_map    context_for / impact      plan_score         baseline        chat     better/worse     undo if needed
 ```
+
+The first step is automatic. RIA reads what you typed and decides which kind of work it is: something new (the
+**Writer**), a bug (the **Fixer**), a question about the code (the **Reader**), a judgement about options or risk (the
+**Analyser**), moving code without changing it (the **Extractor**), a check of someone's change (the **Reviewer**), or a
+whole task or several at once (the **Autopilot**). Each role has its own steps, so "create a new file" and "fix this
+error" are not handled the same way. See "Roles, and how the right one is chosen".
 
 ---
 
@@ -70,7 +76,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Verified change loop | Baseline before an edit, comparison after, verdict, byte-exact undo | **Built** |
 | Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and ignored coupling before editing | **Built** |
 | Skill forge | Learn from web sources into reusable skills, with provenance, sandbox test and human approval | Planned (step 5) |
-| Roles as configuration | Reader, Analyser, Extractor, Writer, Fixer, Reviewer are instruction files that tell the chat which RIA tools to use in which order; `ria init` installs them for Claude Code and Copilot | **Built** |
+| Roles as configuration | Reader, Analyser, Extractor, Writer, Fixer, Reviewer and Autopilot are instruction files that tell the chat which RIA tools to use in which order; `ria init` installs them for Claude Code and Copilot | **Built** |
+| The role follows the request | The wording of each request picks the role (a router with no model in it): a `start_task` tool for any chat, and a Claude Code hook that adds the role to every request | **Built**, checked in Claude Code |
 
 ---
 
@@ -112,14 +119,15 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Index store | `src/repo/repo-index.ts`, `ria-dir.ts` | File listing (git or walk), incremental refresh, `.ria/` cache, target resolution (path, suffix, symbol) |
 | History | `src/git/history.ts` | `git` wrapper (stderr kept, long paths on), co-change from `git log` |
 | Navigation tools | `src/tools/repo-map.ts`, `context.ts`, `find-path.ts`, `impact.ts`, `plan-score.ts`, `shared.ts` | The five read-only tools and their text reports |
+| Routing | `src/tools/route.ts` | `start_task` and `ria route`: which role a request calls for (word and phrase rules, no model), the role's playbook, and the short note the hook adds |
 | Gate | `src/gate/snapshot.ts` | Byte-exact snapshots in git, diff between snapshots, restore |
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
-| Hook | `src/hooks/stop.ts` | `ria hook stop`: the Claude Code `Stop` hook that holds the chat back while the gate says its change made things worse |
+| Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
+| Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 239 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, the Stop hook, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 280 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -183,7 +191,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 239 tests
+Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
+the prompt sets that check the role routing). All 280 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -191,7 +200,7 @@ pass, typecheck and build are clean.
 | 1 | MCP server and navigation tools: `repo_map`, `context_for`, `find_path`, `impact` | Done |
 | 2 | Change gate: `gate_begin`, `gate_check`, `gate_rollback` | Done |
 | 3 | Plan scoring: `plan_score` | Done |
-| 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init` | Done |
+| 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init`, with the role chosen from each request (`start_task`, a Claude Code hook) | Done |
 | 5 | Skill forge | To do |
 | 6 | Eval harness: `ria eval history`, `ria eval gate` | Done |
 | 7 | VS Code extension | Optional |
@@ -247,9 +256,37 @@ JSON block kept the chat working and was shown to it as "Stop hook feedback", th
 `stop_hook_active` true) was held back again as "2 of 2", and the third was let go. That chat had no tools, so it
 could not act on the report; whether a chat with tools fixes the change is not tested.
 
-**Not verified yet:** Copilot Chat, the role files (neither host has loaded them), behaviour against those hosts'
-tool-call timeouts on a long gate run, and whether a chat given a role actually follows it (that needs a model, which
-RIA does not have). The history numbers come from one repository.
+**The role hook, in Claude Code (2026-10-26).** `ria init --host claude --hooks --apply` into a throwaway project (a
+3-file Node project with a `node --test` suite), then the real `claude -p` on the smallest model (Haiku), with tools
+and the RIA server, reading its own event stream. In single runs the hook injected the right role every time: Reader
+for "explain how the math module is used, don't change anything" (no edits, answered with `src/math.js:1-2`), Writer
+for "create a new file…", Fixer for "the add function returns the wrong result and the test fails. fix it", Extractor
+for "move the sub function into its own file… without changing behaviour", Reviewer for "review my uncommitted
+changes", Analyser for "what would break if I rename…", Writer for the typo'd "creaet a new file…", and nothing for
+"thanks, that is all for now". The chat then did what the role says: the Fixer and the Extractor called `gate_begin`
+before editing and `gate_check` after (the Extractor also updated all three importers, the test included); the Reviewer
+read the diff, called `impact`, edited nothing and reported a blocker with `src/math.js:2`. Running it showed two
+things the tests had not. A verb after "the" was read as a command (in "the *add* function returns the wrong result" the
+router saw "add" and sent a fix to the Autopilot), which is now fixed with a test. And the role is advice, not enforcement:
+the typo'd "creaet a new file…" run skipped the gate, and the Analyser used `grep` and not `impact` on a three-file project.
+
+To see whether the hook changes anything, the same two tasks were run four times each with the hook on and off
+(everything else the same, including the server and the skills): does the chat call `gate_begin` before its first edit?
+
+| Task | Hook on | Hook off |
+|---|---|---|
+| "create a new file src/greet.js that exports greet(name)…, with a test" (Writer) | 3 of 4 | 0 of 4 |
+| "move the sub function into its own file src/sub.js without changing behaviour" (Extractor) | 4 of 4 | 4 of 4 |
+
+With the hook off the Writer task made no RIA call at all in four runs; with it on, three of four followed the Writer's
+steps and one still skipped them. The Extractor needed no help, because "without changing behaviour" is cue enough. Read
+it as direction, not proof: 16 runs, one small model and a toy project, with four runs per cell, so one run more or
+less changes the picture.
+A stronger model may follow the roles more often unaided; a bigger repository may make the RIA tools matter more. The
+16 runs cost $1.40.
+
+**Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
+long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
 
 ---
 
@@ -257,6 +294,7 @@ RIA does not have). The history numbers come from one repository.
 
 | Tool | Parameters | Use it to |
 |---|---|---|
+| `start_task` | `task` (the user's request in their own words) | At the start of every new request: get the role it calls for (writer, fixer, reader, analyser, extractor, reviewer or autopilot), why, and that role's steps, stop conditions and report; says when the request is only a follow-up |
 | `repo_map` | `max_tokens` (500-20000, default 4000), `focus` (directory) | Orient in an unfamiliar repo: languages, entry points, structure, most depended-on files and their symbols |
 | `context_for` | `target` (file or symbol), `query` (task in words), `max_files` (12), `max_tokens` (8000), `include_tests` (true) | Get the smallest ranked set of files to read, each with the reason it matters and a token estimate; a file bigger than the whole budget comes back as an outline of its symbols with line numbers |
 | `find_path` | `from`, `to` (file, suffix or symbol) | See the cheapest chain of imports between two things, with direction; falls back to co-change evidence |
@@ -267,7 +305,7 @@ RIA does not have). The history numbers come from one repository.
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
 
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
-can be read in part. Navigation tools are marked read-only; the gate tools are not, and
+can be read in part. `start_task` and the navigation tools are marked read-only; the gate tools are not, and
 `gate_rollback` is marked destructive.
 
 ---
@@ -366,30 +404,86 @@ claude mcp add ria -- node C:/path/to/repository-intelligence-assistant/dist/ind
 This repository ships both configs ([.vscode/mcp.json](.vscode/mcp.json), [.mcp.json](.mcp.json))
 so RIA can analyse itself once built.
 
-**Roles and `ria init`.** The tools work on their own, but a chat does not know which one to use when.
-`ria init` installs the MCP config plus seven roles: instruction files that say which RIA tools to call in
+**Roles, and how the right one is chosen.** The tools work on their own, but a chat does not know which one to use
+when. `ria init` installs the MCP config plus seven roles: instruction files that say which RIA tools to call in
 which order, when to stop, and what to report. Six are specialists; the seventh, the **Autopilot**, runs a whole
-task by itself (see below).
+task by itself (see below). You do not pick a role: it follows from what you type (see "How the role is chosen").
 
 ```powershell
-node dist/index.js init --host both --root C:/path/to/your/repo           # preview: writes nothing
-node dist/index.js init --host both --root C:/path/to/your/repo --apply   # write the files
+node dist/index.js init --host claude --hooks --root C:/path/to/your/repo           # preview: writes nothing
+node dist/index.js init --host claude --hooks --root C:/path/to/your/repo --apply   # write the files
+node dist/index.js init --host both --root C:/path/to/your/repo --apply             # Copilot as well, without hooks
 ```
 
 | Host | What is written |
 |---|---|
 | `--host claude` | the `ria` entry in `.mcp.json`, and `.claude/skills/ria-<role>/SKILL.md` |
+| `--host claude --hooks` | also `.claude/settings.local.json` with two hooks: the one that picks the role for each request, and the one that holds the chat to the gate (both described below). The file is personal: keep it out of git |
 | `--host copilot` | the `ria` entry in `.vscode/mcp.json`, and `.github/agents/ria-<role>.agent.md` |
 
 | Role | Use it to | Edits | RIA tools |
 |---|---|---|---|
-| Autopilot | do a whole task start to finish: a question, a feature, a fix, a move of code or a review; asks only when a decision is needed | yes | everything, including the gate |
-| Reader | understand or explain code, find where something lives | no | `repo_map`, `context_for`, `find_path` |
+| Autopilot | do a whole task start to finish, or several kinds of work at once, or when the request is unclear; asks only when a decision is needed | yes | everything, including the gate |
+| Reader | understand or explain code, find where something lives, see who uses it | no | the navigation tools |
 | Analyser | judge size and risk before a change, compare approaches | no | the navigation tools and `plan_score` |
-| Extractor | move or split code without changing behaviour | yes | everything, including the gate |
-| Writer | add a feature or new code | yes | everything, including the gate |
+| Extractor | move, split or rename code without changing behaviour | yes | everything, including the gate |
+| Writer | create something new (a file, a folder, a feature, a test) or change how something works on purpose | yes | everything, including the gate |
 | Fixer | fix a bug or a failing check, and prove it | yes | the navigation tools and the gate |
 | Reviewer | review someone else's change | no | the navigation tools |
+
+The navigation tools are `start_task`, `repo_map`, `context_for`, `find_path` and `impact`. What makes each role
+stronger than a bare instruction is what it makes the chat do before and after the edit: the Writer copies the
+closest existing example, places the file beside its siblings, never overwrites an existing path, finds where new
+code is registered, and expects its new tests to show up in the gate's test count; the Fixer reproduces the failure
+through the gate's baseline, states the cause with evidence, adds a test that fails without the fix, and looks for the
+same bug in coupled files; the Extractor insists on a test that pins the behaviour before it moves anything and
+searches the text for the old names that import matching cannot see; the Analyser always includes the smallest plan
+and says plainly that the score is evidence, not proof; the Reviewer labels findings blocker, major, minor or nit
+with `path:line`. Every role also carries the same rules for working with few calls and few tokens (one `context_for`
+call replaces many searches, read big files by line range, batch `impact` over many files, never repeat a call), and
+a section on switching role when the next request is a different kind of task.
+
+**How the role is chosen.** Three channels carry the same decision, so it works in whichever chat you use:
+
+1. **The `start_task` tool, in any MCP chat** (Claude Code, Copilot Chat, others). The server's own instructions tell
+   the chat to call it first with your request in your words. It returns the role, why, and the role's whole playbook.
+   It also checks whether the files your request names exist: "create `src/new.ts`" for a file that is not there
+   supports the Writer, and "explain `src/nope.ts`" for a file that is not there is flagged as a likely typo.
+2. **A Claude Code hook that runs on every request** (`ria hook prompt`, installed by `ria init --hooks`). It adds
+   a short note to the request: the role, why, and the role's brief. It reads only the text, writes nothing into
+   the repository and answers in milliseconds; it never blocks a request. For "yes", "continue" or "commit this" it adds
+   nothing, so the chat keeps the role it has.
+3. **The skills and agents themselves.** Each carries a description in the words people type ("fix this", "where
+   is", "refactor", "review my changes"), which is what Claude Code matches a request against, and each has a section on
+   switching role when the request changes kind.
+
+The router (`ria route "<request>"` shows its decision) is a set of weighted word and phrase rules with no model in it,
+so the same request always gets the same role and the reason is shown. It stems words, tolerates a swapped or
+missing letter ("creaet", "chnage", "implment"), reads a verb after "the" as a name ("the add function"), treats
+a question that gives no order ("how risky is it to move X?") as a request for information that can never go to a role
+that edits, honours "don't change anything", sends a request with two kinds of work ("add dark mode and fix the sidebar")
+to the Autopilot, and treats a fix plus a test for it as one fix. When it is not sure which role that edits fits, it
+says so and picks the Autopilot, whose first step is to name the role itself, rather than inject the wrong playbook.
+A role that only reads does no harm when it is a guess, so those keep their answer.
+
+How well it chooses, on prompts written by hand (the author's, in sets written at different times; the router
+was tuned on A, B and D, and E was measured once before anything was changed for it). "Right" is the role you wanted
+or another that fits; "fallback" is no role or the Autopilot for a real request (the chat then uses its own judgement);
+"wrong" is any other role:
+
+| Set | Prompts | First look, before tuning on it | Now |
+|---|---|---|---|
+| A: simple phrasing | 106 | 96% right | 97% right, 0% wrong |
+| B: polite, long, pasted errors | 71 | 77% right | 96% right, 1% wrong |
+| D: other verbs ("hook up", "spin up", "port") | 62 | 65% right, about 13% wrong | 95% right, 0% wrong |
+| E: issue titles, chatty, Stack Overflow style | 40 | 80% right, 8% wrong | 85% right, 0% wrong |
+| The author's own typed messages from this project's earlier sessions (not stored in the repository) | 25 | 84% right, 16% wrong | 96% right, 0% wrong |
+
+The honest reading is the first-look column: on wording it has not seen, expect about 80% right, a few percent
+wrong, and the rest a safe fallback. The gap between the first look and now is the cost of an English phrasing
+heuristic: it learns the verbs it was given, and each real misreading (in the author's messages, "what developed" for
+"what has been developed", and "VS code" read as "versus") was a missing general rule. Tests keep each set above a
+floor so a change cannot quietly make it worse. It reads English only.
 
 How it behaves: it previews unless `--apply` is given; it keeps a role file you edited (`--force` replaces
 it); it adds the `ria` server to an existing MCP config and keeps your other servers (a config with comments
@@ -405,13 +499,16 @@ What is enforced and what is not:
   list uses `ria/<tool>` names. VS Code's own reference documents `ria/*`; the per-tool form comes from
   GitHub's custom agent reference, so if your VS Code version ignores it, replace the names with `ria/*`.
 - **Claude Code** skills are instructions too, and RIA writes no permission rules: tool approval stays in
-  your own settings. Claude Code hooks can enforce the loop: see "Make Claude Code finish only when the gate
-  agrees" below.
+  your own settings. The routing hook is advice: it tells the chat which role the request needs, and the chat can
+  still skip that role's steps. What Claude Code hooks can enforce is the end of the loop: see "Make Claude Code
+  finish only when the gate agrees" below.
 
 **Make Claude Code finish only when the gate agrees.** `ria hook stop` is a Claude Code `Stop` hook. When the chat is
 about to finish and the latest gate run (the one it started with `gate_begin`) says its change made things worse
 (`regressed` or `mixed`), the hook keeps it working and hands it the gate report as its next instruction. Put this
-in `.claude/settings.json` (shared with the project) or `.claude/settings.local.json` (yours only):
+in `.claude/settings.json` (shared with the project) or `.claude/settings.local.json` (yours only), or let
+`ria init --host claude --hooks --apply` write it for you, together with the routing hook (it merges into an
+existing file, keeps your own hooks, and does nothing if RIA's hooks are already there):
 
 ```json
 {
@@ -447,7 +544,7 @@ in `.claude/settings.json` (shared with the project) or `.claude/settings.local.
   failing tests. If the hook itself breaks (no git, an unreadable run) it exits 1, which Claude Code treats as a
   non-blocking error, so a broken hook cannot trap the chat.
 - Like `gate_check`, it runs the project's own commands. It does not make the chat call `gate_begin`: without a
-  baseline there is nothing to compare with. `ria init` does not install it yet.
+  baseline there is nothing to compare with, so a chat that edits without a baseline is not held to anything.
 
 **The Autopilot.** Hand it a task and it works out what kind of task it is (a question, a change or a review),
 finds the files, checks the impact, compares approaches with `plan_score` when there is more than one, records a
@@ -537,6 +634,16 @@ default root.
   cost** (1 point per 2,000 tokens of the files, max 10). The recommendation names the factors that separate
   the best plan from the runner-up, what the best plan costs more in, and calls a lead under 2 points a close
   call. Capped figures are marked as capped.
+- `start_task` and `ria route` score each sentence of the request against weighted rules: a word list per role
+  (stemmed, with a one-slip typo allowance for words of five letters or more), phrase patterns (`should we`, `what
+  would break`, `keeps crashing`, `end to end`), a bonus for a sentence that starts with its verb, and a discount for
+  the editing roles in a sentence that asks for information. Then: "don't change anything" cuts the editing roles; a
+  request that ends in a question mark and gives no order cannot go to an editing role; two kinds of editing work in
+  separate clauses mean the Autopilot (a fix plus its test, or a rename plus its imports, count as one); the highest
+  score wins and a tie goes to the more specific role; confidence is high from 5 points, medium from 3, and one level
+  lower when the runner-up is within 1 point; an editing role at low confidence becomes the Autopilot; with no signal
+  at all, a reply or short remark gets no role (judged by how much of it is small words) and a longer request gets the
+  Autopilot. Every figure is in `src/tools/route.ts`, and `ria route "..." --json` prints the scores.
 
 ---
 
@@ -570,12 +677,13 @@ config (see "Roles and `ria init`" for what it writes, what it will not overwrit
 
 **Still open.**
 
-- The role files have never been loaded by Copilot Chat or Claude Code themselves. Whether a model follows
-  them well (does the Autopilot really ask only when it should?) can only be seen by trying it in the host: RIA has
-  no model to drive that test, so it is a trial for you to run.
+- The role files have been loaded by Claude Code (see "Checked in a real host") but not by Copilot Chat. Whether a
+  model follows a role well (does the Autopilot really ask only when it should?) can only be seen by trying it in the
+  host; the real-host checks so far are a handful of runs on one model.
 - The two small tools the Extractor might need (list a file's exports, search symbols by name) were not added:
   `context_for` and the public surface in `impact` cover it so far. Revisit if real use shows a gap.
-- The Claude Code `Stop` hook that enforces the loop is built (`ria hook stop`); `ria init` does not install it yet.
+- The Claude Code `Stop` hook that enforces the loop (`ria hook stop`) and the hook that routes each request
+  (`ria hook prompt`) are built, and `ria init --hooks` installs both.
 
 ### Step 5: skill forge
 
@@ -625,7 +733,9 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Gate mode that runs only the tests tied to changed files | Large suites make the gate slow |
 | Background gate runs with a status call | Very long suites and host timeouts |
-| `ria init --host claude` option that writes the Stop hook into `.claude/settings.json` | Today it is a block to paste (see "Make Claude Code finish only when the gate agrees"); an installer needs the same preview, merge and keep-your-edits rules as the MCP config |
+| A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
+| Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
+| Router: more languages than English, and learning from the roles you correct | It reads English only; each real misreading so far was a missing general rule |
 | PR review mode (`ria review <range>`) | Impact and optional gate on a diff, as a markdown comment |
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
@@ -662,6 +772,12 @@ commands for start, check and rollback.
   2026-10-23, and both hosts have renamed these features before, so re-check the format after a major VS Code or
   Claude Code update. Built-in Copilot tool names (`read`, `search`, `edit`, `execute`) are ignored by a VS Code
   version that does not know them.
+- The router chooses a role from the wording of one request, in English, with word and phrase rules. On wording it has
+  not seen, expect about 80% right, a few percent wrong and the rest a fallback to the Autopilot or to no role (see
+  "How the role is chosen"). It sees one request, not the conversation: "yes" keeps the role the chat already has, but
+  a request that only makes sense in context ("do the other one too") can be misread. It cannot tell a joke or a
+  quotation from an order. The chat is told to use its own judgement and say which role it chose, and the hook only
+  advises: a chat can ignore the role's steps.
 - `ria eval history` measures whether the tools predict what developers did, not whether what they did was right,
   and it uses today's import graph with the history as it was. Commit subjects are often too short to be a task
   (102 of 150 on the measured repository). The `plan_score` check treats "a fix, bug or revert commit touched the
@@ -676,17 +792,17 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 239 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 280 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
 
 **CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs `npm ci`, typecheck, build, tests and `npm run eval` on
 every push to `main` and every pull request, on `windows-latest` with Node 24: the one combination this project was
-built and checked on. The workflow has not run on GitHub yet. Its steps were run in a fresh clone of the committed code
-with no git identity configured, as on a runner: all passed, in about 2 minutes. Linux and macOS have not been tried
-(WSL is not installed here and Docker is in Windows-container mode), so they are not in the workflow; add them to a
-matrix after the suite has run there.
+built and checked on. It has run on GitHub twice, both green (the pull request and the push to `main`, 2026-10-26).
+Before that, its steps were run in a fresh clone of the committed code with no git identity configured, as on a runner:
+all passed, in about 2 minutes. Linux and macOS have not been tried (WSL is not installed here and Docker is in
+Windows-container mode), so they are not in the workflow; add them to a matrix after the suite has run there.
 
 **Add a language.** A row in `extract.ts` (symbol rules, import rule), an entry in `languages.ts`, a
 resolver case in `resolve.ts`, and tests in `tests/extract.test.ts` and `tests/graph.test.ts`.

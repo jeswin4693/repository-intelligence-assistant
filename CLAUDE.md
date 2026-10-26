@@ -10,7 +10,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 239 tests, about 1 min
+npm test            # 280 tests, about 1 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
@@ -23,6 +23,11 @@ npm run build       # needed before `node dist/index.js ...` or the MCP configs;
 - Bump `CACHE_SCHEMA` in `src/repo/repo-index.ts` when the content of a cached file record changes.
 - Every behaviour gets a test. For ranking or parser changes also run the tools on a real repository with `--no-cache`
   (small fixtures alone missed several real problems).
+- `src/tools/route.ts` picks the role from the wording of a request. Fix a misrouted request with a general rule, never
+  a special case for that sentence; add the prompt to a set in `tests/route-cases.ts` and keep the accuracy floors in
+  `tests/route.test.ts`. Set E there was measured once before it was used for anything, so add new prompts to a new set.
+  Run `node dist/index.js route "<request>"` to see a decision and why. The hooks run from `dist/`: rebuild before
+  trying them in Claude Code.
 - Do not write `.ria/` into other repositories while testing; use `--no-cache`.
 - Do not commit or push unless asked.
 
