@@ -316,9 +316,35 @@ The comparison also found a bug in the hook. Claude Code runs it for messages it
 request and injected the Autopilot into the conversation. The hook now ignores such messages, prompts that name a
 subagent (`agent_id`), and the editor's `<ide_...>` context in front of the typed text, with tests.
 
+**The same comparison on a repository that already has failing tests (2026-10-26).** The gate's main promise is that a
+project that is already failing is not blamed for it, and the clean repository above could not test that. So the same
+two jobs (write `wordCount`; fix the planted `reach` bug) were run on fresh clones of the current code in which two
+unrelated tests had been broken on purpose and committed as "known failures" (`risk.level` expected `"high"` in
+`tests/tools.test.ts`, and a package-manager command with a stray letter in `tests/gate-detect.test.ts`; the code under
+test is right in both). Two runs per cell, 8 runs, the smallest model. A run counts as clean only if the job is done,
+both known failures are still there and untouched, and no new test fails, all checked by scripts afterwards.
+
+| Job | Clean, plain → RIA | Cost, plain → RIA | Time, plain → RIA | Told you about the old failures, plain → RIA |
+|---|---|---|---|---|
+| Write `wordCount` and tests | 2 of 2 → 2 of 2 | $0.08 → $0.19 | 90 s → 331 s | 0 of 2 → 2 of 2 |
+| Fix the planted bug | **1 of 2** → 2 of 2 | $0.19 → $0.115 | 391 s → 323 s | 0 of 2 → 1 of 2 |
+
+What the one unclean run did. Plain Claude fixed the real bug, and then also changed the assertion in an unrelated
+failing test (`"high"` back to `"low"`) and reported *"Updated the test expectation… since the impact risk calculation
+changed with the corrected reach behavior"*. That was not true: the fix had nothing to do with that test. A chat that
+edits an unrelated failing test to make the suite greener, and invents the reason, is how a real problem in a real
+project gets hidden. Neither RIA Fixer run did that. In the two RIA Writer runs and one RIA Fixer run the chat's
+report said the two failures were "pre-existing and unrelated"; the plain Writer runs never ran the whole suite, so
+they neither noticed nor said anything, and none of the plain runs mentioned them. How to read it: the gate recorded the
+failures at the baseline ("already failing, only new problems count") and the Fixer role forbids making a check pass by
+weakening a test, which are the likely reasons, but with two runs per cell one tampering run is a signal and not a
+rate. The cost picture is mixed: the Writer job was about 2.5 times dearer and 3.7 times slower with RIA (two full-suite
+gate runs, and a red baseline correctly rules out scope `tied`), while the Fixer job was cheaper and faster, because the
+plain chat spent more turns running and re-running the suite. The 8 runs cost an estimated $0.53 plain and $0.61 with
+RIA. A fix for the Writer's time on a red baseline is in the backlog.
+
 **Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
-long gate run, any model other than the smallest Claude one, and a repository that already has failing tests. The
-history numbers come from one repository.
+long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
 
 ---
 
@@ -794,7 +820,7 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Targeted tests for the common runners without writing a template (jest `--findRelatedTests`, vitest `related`, pytest, go test) | `scope: "tied"` is built (see "The change gate") but each project has to define its command in `ria.config.json`. Defaults for runners that can be recognised safely would make it work out of the box |
 | Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
-| A comparison on a repository that already has failing tests | The gate's main promise, that only new failures count, was not exercised by the clean repository used so far |
+| `scope: "tied"` on a red baseline, reporting regressions only | A red baseline now forces the full run, which is why the Writer job took 3.7 times as long with RIA in the failing-tests comparison. Failures can be compared by name, so a narrowed run could still catch new failures; it could not claim "improved" |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
