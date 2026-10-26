@@ -30,6 +30,11 @@ export interface CommandResult {
   outputTail: string;
   logFile?: string;
   note?: string;
+  /**
+   * Set when only part of the command's usual work was done (the tests tied to the changed files, not the whole
+   * suite). It is shown wherever the result is, because a pass here says less than a pass of everything.
+   */
+  partial?: string;
 }
 
 export interface CheckRecord {

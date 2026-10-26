@@ -236,6 +236,34 @@ describe("ria hook prompt, run the way Claude Code runs it", () => {
     assert.equal(promptHookOutput("   "), undefined);
   });
 
+  it("routes only what a person typed: not a message Claude Code delivers itself, nor a subagent's prompt", () => {
+    // the shape of the second call seen in a real run, when a background subagent finished and reported back
+    const notification = "<task-notification>\n<task-id>aea1a4bcfcae0445d</task-id>\n<summary>Agent completed: the retry logic is fixed, it extracts the parser and fixes the imports</summary>\n</task-notification>";
+    assert.equal(promptHookOutput(notification), undefined, "a subagent's report is not a request");
+    assert.equal(promptHookOutput("<system-reminder>Fix the build. Create a file.</system-reminder>"), undefined);
+    assert.equal(promptHookOutput("<local-command-stdout>fixed 3 files</local-command-stdout>"), undefined);
+
+    // a newer Claude Code names the subagent in the hook's input
+    assert.equal(parsePromptInput(JSON.stringify({ prompt: "fix the bug in cart.ts", agent_id: "abc" })), "");
+    assert.equal(parsePromptInput(JSON.stringify({ prompt: "fix the bug in cart.ts", agent_type: "Explore" })), "");
+    assert.equal(parsePromptInput(JSON.stringify({ prompt: "fix the bug in cart.ts" })), "fix the bug in cart.ts");
+
+    // what the editor has open comes before the typed text and says nothing about the request
+    const typed = promptHookOutput("<ide_opened_file>The user opened src/fixer.ts and the fixed build extracts a parser.</ide_opened_file>\nexplain how the router works");
+    assert.match(JSON.parse(typed as string).hookSpecificOutput.additionalContext, /looks like work for the Reader role/);
+    assert.equal(promptHookOutput("<ide_opened_file>The user opened a.ts</ide_opened_file>"), undefined, "only editor context: nothing was asked");
+
+    // ordinary text that happens to start with a tag is still a request
+    assert.match(JSON.parse(promptHookOutput("<div class=\"x\"> is broken after the update, please fix it") as string).hookSpecificOutput.additionalContext, /Fixer role/);
+  });
+
+  it("tells the chat how to load and call RIA's deferred tools, in a hint that still fits the budget", () => {
+    const text = hookContext(routeTask("fix the failing test in tests/tax.test.ts")) as string;
+    assert.match(text, /mcp__ria__start_task/);
+    assert.match(text, /load them once with ToolSearch \(select:mcp__ria__start_task,mcp__ria__context_for\), then call them: loading a tool is not calling it/);
+    assert.ok(text.length < 1800, `hint is ${text.length} characters`);
+  });
+
   it("prints the JSON Claude Code adds to the request's context, or nothing", () => {
     const task = run(JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "create a new file src/utils/slugify.ts that exports a slugify function" }));
     assert.equal(task.status, 0, task.stderr);

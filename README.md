@@ -124,10 +124,11 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
+| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files, and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 280 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 295 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -192,7 +193,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 280 tests
+the prompt sets that check the role routing). All 295 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -285,6 +286,63 @@ less changes the picture.
 A stronger model may follow the roles more often unaided; a bigger repository may make the RIA tools matter more. The
 16 runs cost $1.40.
 
+**Plain Claude Code against Claude Code with RIA, on a real repository (2026-10-26).** The same four jobs, each run
+twice in each condition (16 runs), every one on a fresh clone of this repository (56 files, a 280-test suite), on the
+smallest model. The outcomes were checked afterwards by scripts that do not trust the chat: the new function's behaviour,
+typecheck, the whole suite, whether any test was edited, a checklist of facts in an explanation, and the list of files
+that use a renamed function.
+
+| Job | Correct, plain → RIA | Cost, plain → RIA | Time, plain → RIA | Gate started before the edit, plain → RIA |
+|---|---|---|---|---|
+| Write `wordCount` and its tests | 2 of 2 → 2 of 2 | $0.10 → $0.21 | 79 s → 167 s | 0 of 2 → 1 of 2 |
+| Fix a planted off-by-one in `reach` | 2 of 2 → 2 of 2 | $0.105 → $0.114 | 171 s → 233 s | 0 of 2 → 2 of 2 |
+| Explain how the gate decides its verdict (7-point checklist) | 1 of 2 → 2 of 2 | $0.09 → $0.11 | 21 s → 17 s | not applicable |
+| Find what breaks if `approxTokens` is renamed (4 files) | 2 of 2 → 2 of 2 | $0.04 → $0.07 | 18 s → 35 s | not applicable |
+
+The estimated cost of the 16 runs was $0.68 for plain and $1.02 with RIA (Claude Code's own price estimate, not a bill).
+How to read it. The outcomes are a tie: on small, easy jobs plain Claude Code already gets them right, and the single
+miss was one explanation that lacked one of seven facts, which two runs per cell cannot call a difference. What RIA
+changed is the process: the Fixer started a gate baseline before editing both times and checked afterwards, the Analyser
+called `impact` and `plan_score`, and plain Claude Code did neither. The price is about 50% more cost and, on the editing
+jobs, up to twice the time, mostly the gate running the 60-second suite twice and extra turns. On a clean repository
+with a fast, fully green suite that is largely repeated work, because the plain chat also ran the suite itself. The
+gate's real advantage, that only new failures count against a change, needs a repository that already has failing
+tests, which this comparison did not have. One RIA Writer run loaded the RIA tools eight times and never called one
+(the role was injected, but loading a deferred tool is not calling it); the hook's note now says how to load and call
+them, and that has not been re-measured. 16 runs, one small model, one small repository.
+
+The comparison also found a bug in the hook. Claude Code runs it for messages it delivers itself, such as the
+`<task-notification>` that reports a finished subagent, and the router read that report ("fixed", "extracts") as a
+request and injected the Autopilot into the conversation. The hook now ignores such messages, prompts that name a
+subagent (`agent_id`), and the editor's `<ide_...>` context in front of the typed text, with tests.
+
+**The same comparison on a repository that already has failing tests (2026-10-26).** The gate's main promise is that a
+project that is already failing is not blamed for it, and the clean repository above could not test that. So the same
+two jobs (write `wordCount`; fix the planted `reach` bug) were run on fresh clones of the current code in which two
+unrelated tests had been broken on purpose and committed as "known failures" (`risk.level` expected `"high"` in
+`tests/tools.test.ts`, and a package-manager command with a stray letter in `tests/gate-detect.test.ts`; the code under
+test is right in both). Two runs per cell, 8 runs, the smallest model. A run counts as clean only if the job is done,
+both known failures are still there and untouched, and no new test fails, all checked by scripts afterwards.
+
+| Job | Clean, plain → RIA | Cost, plain → RIA | Time, plain → RIA | Told you about the old failures, plain → RIA |
+|---|---|---|---|---|
+| Write `wordCount` and tests | 2 of 2 → 2 of 2 | $0.08 → $0.19 | 90 s → 331 s | 0 of 2 → 2 of 2 |
+| Fix the planted bug | **1 of 2** → 2 of 2 | $0.19 → $0.115 | 391 s → 323 s | 0 of 2 → 1 of 2 |
+
+What the one unclean run did. Plain Claude fixed the real bug, and then also changed the assertion in an unrelated
+failing test (`"high"` back to `"low"`) and reported *"Updated the test expectation… since the impact risk calculation
+changed with the corrected reach behavior"*. That was not true: the fix had nothing to do with that test. A chat that
+edits an unrelated failing test to make the suite greener, and invents the reason, is how a real problem in a real
+project gets hidden. Neither RIA Fixer run did that. In the two RIA Writer runs and one RIA Fixer run the chat's
+report said the two failures were "pre-existing and unrelated"; the plain Writer runs never ran the whole suite, so
+they neither noticed nor said anything, and none of the plain runs mentioned them. How to read it: the gate recorded the
+failures at the baseline ("already failing, only new problems count") and the Fixer role forbids making a check pass by
+weakening a test, which are the likely reasons, but with two runs per cell one tampering run is a signal and not a
+rate. The cost picture is mixed: the Writer job was about 2.5 times dearer and 3.7 times slower with RIA (two full-suite
+gate runs, and a red baseline correctly rules out scope `tied`), while the Fixer job was cheaper and faster, because the
+plain chat spent more turns running and re-running the suite. The 8 runs cost an estimated $0.53 plain and $0.61 with
+RIA. A fix for the Writer's time on a red baseline is in the backlog.
+
 **Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
 long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
 
@@ -301,7 +359,7 @@ long gate run, and any model other than the smallest Claude one. The history num
 | `impact` | `files` (1-50), `depth` (1-6, default 3) | Before changing files: dependents, hidden coupling, tests, public symbols, risk score, confidence |
 | `plan_score` | `plans` (1-8, each a `name` and `files`; files not in the index count as new), `depth` (1-6, default 3) | When a task can be done several ways: rank the candidate plans by files changed, blast radius, missing tests, ignored coupling and reading cost, with the reasons, the tests to run and the confidence |
 | `gate_begin` | `label`, `commands` (names) | Before the first edit: record the tree and run the project's checks as a baseline |
-| `gate_check` | `id`, `commands` | After editing: re-run, compare, verdict |
+| `gate_check` | `id`, `commands`, `scope` (`full` or `tied`) | After editing: re-run, compare, verdict; `tied` runs only the tests tied to the changed files when the project defines how |
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
 
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
@@ -352,6 +410,32 @@ change what runs, add `ria.config.json` at the repository root:
 
 A string replaces or adds a command, `null` turns one off. The default timeout is 600 seconds.
 
+**Faster checks while you iterate (`scope: "tied"`).** The baseline always runs everything, but a later check can run
+only the tests tied to the changed files. The project says how, in `ria.config.json`, with a `{files}` placeholder that
+RIA fills from its own list of tied tests (the tests named after or importing a changed file, those that reach it through
+the import graph, and any test file that changed):
+
+```json
+{ "gate": { "targeted": { "test": "node --import tsx --test {files}" } } }
+```
+
+`gate_check` takes `scope: "tied"` (CLI: `gate check --scope tied`); the `gate_begin` report says when it is on offer.
+Typecheck, build and lint still run in full. Running fewer tests can make a gate say "fine" about something it did not
+look at, so it only narrows when that is sound, and otherwise runs the whole command and says why in the report:
+
+- the project defined the command (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
+- the tests were green at the baseline (with failures already there, only a full run tells a new failure from an old one);
+- some test is tied to the change, and not more than 60% of the test files (past that there is nothing to save);
+- every tied file name is plainly safe to put in a command (letters, digits and `_ . / @ + -`).
+
+A narrowed result is marked `PARTIAL` in the report, is not read as "fewer tests ran", can still find a regression in a
+tied test, and caps the confidence at medium with the instruction to finish with a check without a scope. The roles that
+edit say the same. Measured on this repository (295 tests, a 52 s baseline): after a one-line change to
+`src/hooks/prompt.ts`, which ties 1 test file of 21, the tied check took 7 s and the full check 58 s. A change to
+`src/repo/graph.ts` ties 11 of 18 test files, so it correctly falls back to the full run. The tied set comes from regex
+import matching, so a test tied only through a string, a config file or a dynamic import is missed: that is why the
+last check has no scope.
+
 **Undo.** Files are stored and restored byte for byte: line endings are never converted, and
 `.gitattributes` filters are bypassed too on git 2.40 or newer. `gate_rollback` restores only what
 changed since `gate_begin`; work that was already uncommitted then is kept. It previews by default
@@ -363,12 +447,13 @@ and needs `apply` to act.
 node dist/index.js gate begin --label "fix tax rounding"
 # ... edit ...
 node dist/index.js gate check          # exit code 1 when the verdict is regressed or mixed
+node dist/index.js gate check --scope tied   # only the tests tied to the changed files, if ria.config.json defines how
 node dist/index.js gate rollback       # preview; add --apply to do it
 ```
 
 **Gate limits.** It needs git and a writable repository (not `--no-cache`). `gate_begin` and
-`gate_check` run the whole commands, so a slow test suite makes them slow; progress messages are
-sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
+`gate_check` run the whole commands by default, so a slow test suite makes them slow (the baseline always does;
+`scope: "tied"` shortens later checks, see above); progress messages are sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
 and maven for tests, and tsc, eslint, gcc/clang, rustc, msbuild, ruff, mypy and go build for
 diagnostics. Anything else falls back to exit codes and says so.
 
@@ -452,7 +537,9 @@ a section on switching role when the next request is a different kind of task.
 2. **A Claude Code hook that runs on every request** (`ria hook prompt`, installed by `ria init --hooks`). It adds
    a short note to the request: the role, why, and the role's brief. It reads only the text, writes nothing into
    the repository and answers in milliseconds; it never blocks a request. For "yes", "continue" or "commit this" it adds
-   nothing, so the chat keeps the role it has.
+   nothing, so the chat keeps the role it has. It routes only what a person typed: not the messages Claude Code
+   delivers itself (a finished subagent's report), not a subagent's prompt, and not the editor's context in front
+   of your text.
 3. **The skills and agents themselves.** Each carries a description in the words people type ("fix this", "where
    is", "refactor", "review my changes"), which is what Claude Code matches a request against, and each has a section on
    switching role when the request changes kind.
@@ -731,7 +818,9 @@ commands for start, check and rollback.
 | Parser (tree-sitter) behind the same extraction interface | Methods, multi-line signatures, and `import` text inside strings are the main source of wrong edges (this repository's own tests create 24 false gaps) |
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
-| Gate mode that runs only the tests tied to changed files | Large suites make the gate slow |
+| Targeted tests for the common runners without writing a template (jest `--findRelatedTests`, vitest `related`, pytest, go test) | `scope: "tied"` is built (see "The change gate") but each project has to define its command in `ria.config.json`. Defaults for runners that can be recognised safely would make it work out of the box |
+| Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
+| `scope: "tied"` on a red baseline, reporting regressions only | A red baseline now forces the full run, which is why the Writer job took 3.7 times as long with RIA in the failing-tests comparison. Failures can be compared by name, so a narrowed run could still catch new failures; it could not claim "improved" |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
@@ -792,7 +881,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 280 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 295 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

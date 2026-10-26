@@ -83,8 +83,11 @@ export function compareCommand(before: CommandResult | undefined, after: Command
       diff.notes.push(`failing tests went from ${b.failed} to ${a.failed}`);
     }
     if (a.failed < b.failed && diff.fixedTests.length === 0) improved = true;
-    if (a.total < b.total) diff.notes.push(`fewer tests ran (${b.total} -> ${a.total}); check that no tests were deleted or switched off by accident`);
-    if (a.total > b.total) diff.notes.push(`${a.total - b.total} more test(s) ran`);
+    // a partial run (only the tied tests) is expected to run fewer, so the totals say nothing
+    if (!after.partial) {
+      if (a.total < b.total) diff.notes.push(`fewer tests ran (${b.total} -> ${a.total}); check that no tests were deleted or switched off by accident`);
+      if (a.total > b.total) diff.notes.push(`${a.total - b.total} more test(s) ran`);
+    }
   }
 
   diff.outcome = regressed ? "regressed" : improved ? "improved" : "unchanged";
@@ -138,6 +141,7 @@ export function confidenceOf(
     if (failing(d.after) && d.after.status === "fail" && !d.after.parsed) caveats.push(`${d.name}: output format not recognised, only the exit code was compared`);
     if (d.before && failing(d.before)) caveats.push(`${d.name} was already failing before the change, so only new problems count`);
     if (d.after.tests && d.after.tests.total === 0) caveats.push(`${d.name} ran zero tests`);
+    if (d.after.partial) caveats.push(`${d.name}: ${d.after.partial}, so the rest of the suite was not checked: finish with a gate_check without a scope before calling the change done`);
   }
   if (testCoverage === "none") caveats.push("none of the changed files has a test tied to it");
   const level = diffs.length === 0 || !diffs.some((d) => d.name === "test") ? "low" : caveats.length ? "medium" : "high";

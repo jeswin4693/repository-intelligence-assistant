@@ -219,15 +219,19 @@ export function createServer(index: RepoIndex): McpServer {
     {
       title: "Check a change against the gate baseline",
       description:
-        "Call AFTER editing. Re-runs the baseline's commands and compares: what now passes or fails, new failing tests, new compiler/lint errors, imports that no longer resolve, exports that disappeared, and which untouched files and tests may be affected. Ends with a verdict (regressed, mixed, improved, unchanged, unverified) and how far to trust it. Changes no files; safe to call repeatedly while you fix problems.",
+        "Call AFTER editing. Re-runs the baseline's commands and compares: what now passes or fails, new failing tests, new compiler/lint errors, imports that no longer resolve, exports that disappeared, and which untouched files and tests may be affected. Ends with a verdict (regressed, mixed, improved, unchanged, unverified) and how far to trust it. Changes no files; safe to call repeatedly while you fix problems. When the gate_begin report offers faster checks, scope \"tied\" runs only the tests tied to the changed files; finish with a check without a scope.",
       inputSchema: {
         id: z.string().optional().describe("Run id from gate_begin. Default: the latest run."),
         commands: z.array(z.string()).max(10).optional().describe("Re-run only these named commands from the baseline."),
+        scope: z
+          .enum(["full", "tied"])
+          .optional()
+          .describe('"tied": run only the tests tied to the changed files, when the project defines how and the baseline was green; otherwise the whole command runs and the report says why. Faster while iterating, so finish with a check without a scope. Default: full.'),
       },
       annotations: runsCommands,
     },
-    async ({ id, commands }, extra) =>
-      guardedAsync(index, async () => (await gateCheck({ index, progress: progressOf(extra) }, { id, commands })).text),
+    async ({ id, commands, scope }, extra) =>
+      guardedAsync(index, async () => (await gateCheck({ index, progress: progressOf(extra) }, { id, commands, scope })).text),
   );
 
   server.registerTool(
