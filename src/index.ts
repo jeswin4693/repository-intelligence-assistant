@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { evaluateGate, formatGateEval } from "./eval/gate-eval";
 import { evaluateHistory, formatHistoryEval } from "./eval/history-eval";
 import { gateBegin, gateCheck, gateRollback } from "./gate/gate";
+import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
 import { serve } from "./server";
@@ -34,9 +35,11 @@ Commands:
   gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
+  hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
+                              (reads the hook JSON on stdin)  [--max-blocks <n>] [--max-age-hours <n>]
 
 Options:
-  --root <dir>                Repository to analyse (default: $RIA_ROOT or the current directory)
+  --root <dir>                Repository to analyse (default: $RIA_ROOT, for "hook" $CLAUDE_PROJECT_DIR, or the current directory)
   --json                      Print machine-readable output instead of text
   --no-cache                  Do not write .ria/ into the repository (also: RIA_NO_CACHE=1)
   -h, --help                  Show this help
@@ -54,6 +57,16 @@ function ratioOption(value: string | undefined, name: string): number | undefine
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`--${name} must be a number from 0 to 1`);
   return n;
+}
+
+/** A hook gets its input on stdin; run by hand in a terminal, or with stdin closed, it simply has none. */
+function readStdin(): string {
+  if (process.stdin.isTTY) return "";
+  try {
+    return fs.readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function main(): void | Promise<void> {
@@ -79,6 +92,8 @@ function main(): void | Promise<void> {
       label: { type: "string" },
       commands: { type: "string" },
       id: { type: "string" },
+      "max-blocks": { type: "string" },
+      "max-age-hours": { type: "string" },
       apply: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -89,7 +104,8 @@ function main(): void | Promise<void> {
     return;
   }
 
-  const root = path.resolve(values.root ?? process.env.RIA_ROOT ?? process.cwd());
+  // a hook runs in whatever directory the chat is in, so it reads the project root Claude Code exports
+  const root = path.resolve(values.root ?? process.env.RIA_ROOT ?? (command === "hook" ? process.env.CLAUDE_PROJECT_DIR : undefined) ?? process.cwd());
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   const indexOptions = { cache: !values["no-cache"] && !process.env.RIA_NO_CACHE };
   if (command === "serve") return serve(root, indexOptions);
@@ -133,6 +149,19 @@ function main(): void | Promise<void> {
     const written = values.apply ? applyInit(root, plan) : 0;
     process.stdout.write((values.json ? JSON.stringify({ applied: written, ...plan }, null, 2) : formatInit(plan, root, values.apply === true)) + "\n");
     return;
+  }
+
+  if (command === "hook") {
+    if (args[0] !== "stop") throw new Error("hook needs a subcommand: stop");
+    // before the index exists: with no gate run to enforce, the hook must not write a .ria/ cache into the repository
+    const raw = readStdin();
+    return decideStop(root, parseStopInput(raw), {
+      maxBlocks: intOption(values["max-blocks"], "max-blocks"),
+      maxAgeHours: intOption(values["max-age-hours"], "max-age-hours"),
+    }).then((d) => {
+      if (d.note) process.stderr.write(`${d.note}\n`);
+      if (d.block) process.stdout.write(`${JSON.stringify({ decision: "block", reason: d.reason })}\n`);
+    });
   }
 
   const index = new RepoIndex(root, indexOptions);

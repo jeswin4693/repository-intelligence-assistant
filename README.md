@@ -117,8 +117,9 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install (CLI only, not an MCP tool) |
+| Hook | `src/hooks/stop.ts` | `ria hook stop`: the Claude Code `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 226 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 239 tests: parsers, graph, git history, plan scoring, roles and install, evaluation, snapshots, full gate flows, the Stop hook, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -182,7 +183,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 226 tests
+Steps 1 to 4 and 6 are done. About 4,900 lines of source and 2,700 lines of tests. All 239 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -239,7 +240,12 @@ closeness of path, or both moved the first-25 figure from 51 to at most 54, so n
 separates those tests and the ordering was not kept.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
-[.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully.
+[.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
+Claude Code 2.1.278 (`claude -p`, no tools, a throwaway project with a gate run whose change broke a test) ran the
+`ria hook stop` recipe on Windows: the exec-form command started, the repository came from `CLAUDE_PROJECT_DIR`, the
+JSON block kept the chat working and was shown to it as "Stop hook feedback", the second stop (with
+`stop_hook_active` true) was held back again as "2 of 2", and the third was let go. That chat had no tools, so it
+could not act on the report; whether a chat with tools fixes the change is not tested.
 
 **Not verified yet:** Copilot Chat, the role files (neither host has loaded them), behaviour against those hosts'
 tool-call timeouts on a long gate run, and whether a chat given a role actually follows it (that needs a model, which
@@ -399,9 +405,49 @@ What is enforced and what is not:
   list uses `ria/<tool>` names. VS Code's own reference documents `ria/*`; the per-tool form comes from
   GitHub's custom agent reference, so if your VS Code version ignores it, replace the names with `ria/*`.
 - **Claude Code** skills are instructions too, and RIA writes no permission rules: tool approval stays in
-  your own settings. Claude Code hooks can enforce a loop: its documentation says a `Stop` hook that exits
-  with code 2 keeps Claude from finishing and shows its stderr to Claude. A hook that runs `ria gate check`
-  is not written or tested yet (see the backlog).
+  your own settings. Claude Code hooks can enforce the loop: see "Make Claude Code finish only when the gate
+  agrees" below.
+
+**Make Claude Code finish only when the gate agrees.** `ria hook stop` is a Claude Code `Stop` hook. When the chat is
+about to finish and the latest gate run (the one it started with `gate_begin`) says its change made things worse
+(`regressed` or `mixed`), the hook keeps it working and hands it the gate report as its next instruction. Put this
+in `.claude/settings.json` (shared with the project) or `.claude/settings.local.json` (yours only):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["C:/path/to/repository-intelligence-assistant/dist/index.js", "hook", "stop"],
+            "timeout": 1200
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `command` plus `args` is Claude Code's exec form: no shell, so a path with spaces needs no quoting, which matters
+  on Windows. The repository is read from `CLAUDE_PROJECT_DIR`, which Claude Code sets for hooks. `timeout` is in
+  seconds (the default is 600): the hook re-runs the gate's commands, so give it longer than your slowest suite.
+- It enforces only a gate run the chat itself started. With no run, it lets the chat finish and writes nothing into
+  the repository. A run older than 12 hours (`--max-age-hours`) is ignored, because it is probably another task's.
+  When nothing differs from the baseline it answers at once.
+- It holds the chat back at most twice in a row (`--max-blocks`), the Autopilot's limit on fix attempts. The second
+  report says it is the last, and tells the chat to stop and show the user the rollback preview if it is still not
+  fixed. Then the chat is let go. A fixed change, or a fresh stop, starts the count again. Claude Code has its own
+  cap of 8 in a row behind that.
+- It blocks with the JSON form (`{"decision":"block","reason":...}` on stdout, exit code 0), not exit code 2: Claude
+  Code treats an exit-2 block whose stderr mentions a missing file as a plain error, and a gate report quotes
+  failing tests. If the hook itself breaks (no git, an unreadable run) it exits 1, which Claude Code treats as a
+  non-blocking error, so a broken hook cannot trap the chat.
+- Like `gate_check`, it runs the project's own commands. It does not make the chat call `gate_begin`: without a
+  baseline there is nothing to compare with. `ria init` does not install it yet.
 
 **The Autopilot.** Hand it a task and it works out what kind of task it is (a question, a change or a review),
 finds the files, checks the impact, compares approaches with `plan_score` when there is more than one, records a
@@ -529,7 +575,7 @@ config (see "Roles and `ria init`" for what it writes, what it will not overwrit
   no model to drive that test, so it is a trial for you to run.
 - The two small tools the Extractor might need (list a file's exports, search symbols by name) were not added:
   `context_for` and the public surface in `impact` cover it so far. Revisit if real use shows a gap.
-- The Claude Code hook that enforces the loop (see the backlog).
+- The Claude Code `Stop` hook that enforces the loop is built (`ria hook stop`); `ria init` does not install it yet.
 
 ### Step 5: skill forge
 
@@ -579,7 +625,7 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Gate mode that runs only the tests tied to changed files | Large suites make the gate slow |
 | Background gate runs with a status call | Very long suites and host timeouts |
-| Claude Code hook recipe that runs `ria gate check` | Real enforcement. Hook exit codes were checked in the Claude Code docs on 2026-10-23 (a `Stop` hook with exit code 2 keeps Claude working; other non-zero codes do not block), but the recipe is not written or tested |
+| `ria init --host claude` option that writes the Stop hook into `.claude/settings.json` | Today it is a block to paste (see "Make Claude Code finish only when the gate agrees"); an installer needs the same preview, merge and keep-your-edits rules as the MCP config |
 | PR review mode (`ria review <range>`) | Impact and optional gate on a diff, as a markdown comment |
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
@@ -630,7 +676,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 226 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 239 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
