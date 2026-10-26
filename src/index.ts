@@ -36,6 +36,7 @@ Commands:
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
   gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
+                              [--scope tied]   run only the tests tied to the changed files (needs gate.targeted.test in ria.config.json)
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
   route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
@@ -97,6 +98,7 @@ function main(): void | Promise<void> {
       label: { type: "string" },
       commands: { type: "string" },
       id: { type: "string" },
+      scope: { type: "string" },
       "max-blocks": { type: "string" },
       "max-age-hours": { type: "string" },
       apply: { type: "boolean" },
@@ -229,12 +231,15 @@ function main(): void | Promise<void> {
       switch (args[0]) {
         case "begin":
           return gateBegin(env, { label: values.label, commands: names }).then((r) => print(r, r.text));
-        case "check":
-          return gateCheck(env, { id: values.id, commands: names }).then((r) => {
+        case "check": {
+          if (values.scope !== undefined && values.scope !== "full" && values.scope !== "tied") fail("--scope must be full or tied");
+          const scope = values.scope as "full" | "tied" | undefined;
+          return gateCheck(env, { id: values.id, commands: names, scope }).then((r) => {
             print(r, r.text);
             // lets a hook or CI step stop on a change that made things worse
             if (r.verdict === "regressed" || r.verdict === "mixed") process.exitCode = 1;
           });
+        }
         case "rollback":
           return gateRollback(env, { id: values.id, apply: values.apply }).then((text) => print({ text }, text));
         default:

@@ -1,0 +1,5 @@
+{
+  "gate": {
+    "targeted": { "test": "node --import tsx --test {files}" }
+  }
+}

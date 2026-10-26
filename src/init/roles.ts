@@ -53,7 +53,7 @@ export const ROLES: Role[] = [
       "If there is more than one reasonable approach, write each as a plan (a short name and the files it would change, new files included) and call `plan_score`. Follow the top plan yourself, unless it is a close call, RIA's confidence is low, or the choice depends on something only the user knows: then ask.",
       "Call `gate_begin` before the first edit and make no edits until it returns. It records the baseline, including the failures that already existed.",
       "Make the smallest change that does the task, one part at a time. New code: copy the conventions of the closest existing example, put it beside its siblings, never overwrite an existing file, wire it in where its siblings are registered, and add tests in the same style. A bug: fix the cause, not the check, and add a test that fails without the fix. Moving code: keep the behaviour the same, with no new logic and no changed signatures in the same change, and update every importer `impact` listed.",
-      "Call `gate_check` after each part. If it lists problems, fix them and check again, up to two attempts.",
+      "Call `gate_check` after each part. If it lists problems, fix them and check again, up to two attempts. When the `gate_begin` report offers faster checks, `scope` set to `tied` is enough between parts; finish with a `gate_check` without a scope.",
     ],
     stop: [
       ...afterEditStop(
@@ -146,7 +146,7 @@ export const ROLES: Role[] = [
       "Call `gate_begin` before the first edit and make no edits until it returns.",
       "Move the code in small steps: create the new file with the code as it is, move it, then update every import `impact` listed, tests included, and remove the old copy. Do not rename, change signatures or change logic in the same change.",
       "Search the text for the old path and old names: RIA matches imports by pattern, so strings, dynamic imports, docs and config that mention them are missed.",
-      "Call `gate_check`. The test results must be the same as at the baseline. Fix what it lists and check again.",
+      "Call `gate_check`. The test results must be the same as at the baseline. Fix what it lists and check again. When the `gate_begin` report offers faster checks, `scope` set to `tied` runs only the tests tied to the moved code while you iterate; finish with a `gate_check` without a scope.",
     ],
     stop: afterEditStop("`gate_check` ends with `unchanged` (behaviour must not change) and lists no unresolved imports or missing exports."),
     report: [
@@ -171,7 +171,7 @@ export const ROLES: Role[] = [
       "If there is more than one reasonable approach, write each as a plan and call `plan_score`. Follow the top plan unless you can name something RIA cannot see that changes the order, and say so.",
       "Call `gate_begin` before the first edit and make no edits until it returns.",
       "Write the smallest complete thing that does what was asked: no stubs or TODO placeholders, no extra features, and no new dependency without asking. Add tests in the style of the sibling tests, one for each behaviour and one for a failure or edge case. Update the dependents `impact` listed if a public signature changed.",
-      "Call `gate_check`. Fix what it lists and check again.",
+      "Call `gate_check`. Fix what it lists and check again. When the `gate_begin` report offers faster checks, `gate_check` with `scope` set to `tied` runs only the tests tied to your change while you iterate; finish with a `gate_check` without a scope, which runs everything.",
     ],
     stop: afterEditStop(
       "`gate_check` ends with `unchanged` or `improved`, lists no unresolved imports or missing exports, and the number of tests that ran went up by the ones you added. For files that are not code (documents, config) the gate cannot verify the content: say so.",

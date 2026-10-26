@@ -12,6 +12,11 @@ export interface CommandSpec {
 export interface GateConfig {
   commands?: Record<string, string | null>;
   timeoutSeconds?: number;
+  /**
+   * A narrower test command for `gate_check` with `scope: "tied"`. `{files}` is replaced with the test files tied to
+   * the changed files, for example `{ "test": "node --test {files}" }`. It comes from the project, like every command.
+   */
+  targeted?: { test?: string };
 }
 
 export const DEFAULT_TIMEOUT_SECONDS = 600;

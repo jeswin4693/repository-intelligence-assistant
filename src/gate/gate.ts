@@ -11,6 +11,7 @@ import { CommandDiff, Structural, Verdict, compareCommand, confidenceOf, judge }
 import { CommandSpec, DEFAULT_TIMEOUT_SECONDS, detectCommands, loadGateConfig } from "./detect";
 import { parseOutput } from "./parse";
 import { runCommand } from "./runner";
+import { planTargeted } from "./targeted";
 import { Change, GateError, diffSnapshots, readAt, requireGit, restoreChanges, snapshotExists, takeSnapshot } from "./snapshot";
 import { KEEP_RUNS, loadRun, newId, pruneRuns, refFor, runDir, saveRun } from "./store";
 import { CommandResult, RunState, Status } from "./types";
@@ -140,11 +141,14 @@ export async function gateBegin(env: GateEnv, opts: { label?: string; commands?:
     baselineUnresolved: unresolvedKeys(index.graph()),
   };
   saveRun(root, run);
-  return { id, text: formatBegin(run, detected.length === 0) };
+  return { id, text: formatBegin(run, detected.length === 0, Boolean(config.targeted?.test)) };
 }
 
-function formatBegin(run: RunState, noneDetected: boolean): string {
+function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: boolean): string {
   const out = [`Gate started: run ${run.id}${run.label ? ` (${run.label})` : ""}`, "The working tree is recorded. Make your changes now, then call gate_check."];
+  if (targetedAvailable) {
+    out.push('Faster checks while you iterate: gate_check with scope "tied" runs only the tests tied to the changed files. Finish with a gate_check without a scope, which runs everything.');
+  }
   if (run.baselineResults.length === 0) {
     out.push(
       "",
@@ -172,7 +176,7 @@ function formatBegin(run: RunState, noneDetected: boolean): string {
 
 export async function gateCheck(
   env: GateEnv,
-  opts: { id?: string; commands?: string[] } = {},
+  opts: { id?: string; commands?: string[]; scope?: "full" | "tied" } = {},
 ): Promise<{ text: string; verdict: Verdict }> {
   const { index } = env;
   const root = index.root;
@@ -192,8 +196,36 @@ export async function gateCheck(
   index.refresh();
   const graph = index.graph();
   const specs = selectCommands(run.commands, opts.commands);
-  const timeout = loadGateConfig(root).timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
-  const results = await runSpecs(env, specs, dir, `check-${Date.now()}`, timeout);
+  const config = loadGateConfig(root);
+  const timeout = config.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+
+  const changedPaths = new Set(changes.map((c) => c.path));
+  const indexed = changes.filter((c) => c.status !== "D" && index.files.has(c.path)).map((c) => c.path).slice(0, 50);
+  const imp = indexed.length ? impact(index, { files: indexed }) : undefined;
+  const blast = imp && !("error" in imp) ? imp : undefined;
+
+  // Scope "tied" narrows only the test command, and only when it is sound; otherwise the whole command runs and says why.
+  let toRun = specs;
+  let targeted: { files: string[]; of: number } | undefined;
+  let scopeNote: string | undefined;
+  if (opts.scope === "tied") {
+    const testSpec = specs.find((s) => s.name === "test");
+    if (!testSpec) {
+      scopeNote = "Scope \"tied\" had no effect: this check does not run a test command.";
+    } else {
+      const plan = planTargeted({ template: config.targeted?.test, index, changes, blast, baseline: run.baselineResults.find((b) => b.name === "test") });
+      if ("reason" in plan) {
+        scopeNote = `Scope "tied" ran the whole test command: ${plan.reason}.`;
+      } else {
+        toRun = specs.map((s) => (s === testSpec ? { ...s, command: plan.command } : s));
+        targeted = plan;
+      }
+    }
+  }
+  const results = await runSpecs(env, toRun, dir, `check-${Date.now()}`, timeout);
+  if (targeted) {
+    for (const r of results) if (r.name === "test") r.partial = `only the ${plural(targeted.files.length, "test file")} (of ${targeted.of}) tied to the changed files ran`;
+  }
 
   const after = takeSnapshot(root, dir, `RIA gate after-checks ${run.id}`);
   const sideEffects = diffSnapshots(root, edited, after);
@@ -201,17 +233,12 @@ export async function gateCheck(
   const structural = analyseStructure(index, run, changes);
   const diffs = results.map((r) => compareCommand(run.baselineResults.find((b) => b.name === r.name), r));
   const { verdict, reasons } = judge(diffs, structural);
-
-  const changedPaths = new Set(changes.map((c) => c.path));
-  const indexed = changes.filter((c) => c.status !== "D" && index.files.has(c.path)).map((c) => c.path).slice(0, 50);
-  const imp = indexed.length ? impact(index, { files: indexed }) : undefined;
-  const blast = imp && !("error" in imp) ? imp : undefined;
   const conf = confidenceOf(diffs, blast?.testCoverage);
 
   run.lastCheck = { at: new Date().toISOString(), changes, results, verdict };
   saveRun(root, run);
 
-  return { verdict, text: formatCheck({ root, run, changes, diffs, structural, verdict, reasons, blast, graph, changedPaths, sideEffects, conf }) };
+  return { verdict, text: formatCheck({ root, run, changes, diffs, structural, verdict, reasons, blast, graph, changedPaths, sideEffects, conf, scopeNote }) };
 }
 
 function analyseStructure(index: RepoIndex, run: RunState, changes: Change[]): Structural {
@@ -268,6 +295,8 @@ interface CheckView {
   changedPaths: Set<string>;
   sideEffects: Change[];
   conf: { level: string; caveats: string[] };
+  /** Why scope "tied" did not narrow the run, when it was asked for and could not. */
+  scopeNote?: string;
 }
 
 function formatCheck(v: CheckView): string {
@@ -298,6 +327,7 @@ function formatCheck(v: CheckView): string {
       const fixed = d.fixedDiagnostics.filter((x) => x.severity === "error").length;
       if (fixed) out.push(`             ${plural(fixed, "error")} fixed`);
       for (const n of d.notes) if (!/^(\S+) (passed|failed|timed out|could not run) before/.test(n)) out.push(`             ${n}`);
+      if (d.after.partial) out.push(`             PARTIAL: ${d.after.partial}. The rest of the suite was not run.`);
       if (d.after.note) out.push(`             ${d.after.note}`);
       const showTail = d.after.status !== "pass" && d.outcome !== "improved" && d.newFailedTests.length === 0 && d.newDiagnostics.length === 0;
       if (showTail) {
@@ -326,6 +356,7 @@ function formatCheck(v: CheckView): string {
   if (v.sideEffects.length) {
     out.push("", `Note: running the checks itself changed ${plural(v.sideEffects.length, "file")} (${list(v.sideEffects.map((c) => c.path), 5)}).`);
   }
+  if (v.scopeNote) out.push("", `Note: ${v.scopeNote}`);
 
   out.push("", `Confidence: ${v.conf.level}`);
   for (const c of v.conf.caveats) out.push(`  - ${c}`);

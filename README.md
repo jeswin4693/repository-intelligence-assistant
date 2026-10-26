@@ -124,10 +124,11 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
+| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files, and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 282 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 295 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -192,7 +193,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 282 tests
+the prompt sets that check the role routing). All 295 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -332,7 +333,7 @@ history numbers come from one repository.
 | `impact` | `files` (1-50), `depth` (1-6, default 3) | Before changing files: dependents, hidden coupling, tests, public symbols, risk score, confidence |
 | `plan_score` | `plans` (1-8, each a `name` and `files`; files not in the index count as new), `depth` (1-6, default 3) | When a task can be done several ways: rank the candidate plans by files changed, blast radius, missing tests, ignored coupling and reading cost, with the reasons, the tests to run and the confidence |
 | `gate_begin` | `label`, `commands` (names) | Before the first edit: record the tree and run the project's checks as a baseline |
-| `gate_check` | `id`, `commands` | After editing: re-run, compare, verdict |
+| `gate_check` | `id`, `commands`, `scope` (`full` or `tied`) | After editing: re-run, compare, verdict; `tied` runs only the tests tied to the changed files when the project defines how |
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
 
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
@@ -383,6 +384,32 @@ change what runs, add `ria.config.json` at the repository root:
 
 A string replaces or adds a command, `null` turns one off. The default timeout is 600 seconds.
 
+**Faster checks while you iterate (`scope: "tied"`).** The baseline always runs everything, but a later check can run
+only the tests tied to the changed files. The project says how, in `ria.config.json`, with a `{files}` placeholder that
+RIA fills from its own list of tied tests (the tests named after or importing a changed file, those that reach it through
+the import graph, and any test file that changed):
+
+```json
+{ "gate": { "targeted": { "test": "node --import tsx --test {files}" } } }
+```
+
+`gate_check` takes `scope: "tied"` (CLI: `gate check --scope tied`); the `gate_begin` report says when it is on offer.
+Typecheck, build and lint still run in full. Running fewer tests can make a gate say "fine" about something it did not
+look at, so it only narrows when that is sound, and otherwise runs the whole command and says why in the report:
+
+- the project defined the command (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
+- the tests were green at the baseline (with failures already there, only a full run tells a new failure from an old one);
+- some test is tied to the change, and not more than 60% of the test files (past that there is nothing to save);
+- every tied file name is plainly safe to put in a command (letters, digits and `_ . / @ + -`).
+
+A narrowed result is marked `PARTIAL` in the report, is not read as "fewer tests ran", can still find a regression in a
+tied test, and caps the confidence at medium with the instruction to finish with a check without a scope. The roles that
+edit say the same. Measured on this repository (295 tests, a 52 s baseline): after a one-line change to
+`src/hooks/prompt.ts`, which ties 1 test file of 21, the tied check took 7 s and the full check 58 s. A change to
+`src/repo/graph.ts` ties 11 of 18 test files, so it correctly falls back to the full run. The tied set comes from regex
+import matching, so a test tied only through a string, a config file or a dynamic import is missed: that is why the
+last check has no scope.
+
 **Undo.** Files are stored and restored byte for byte: line endings are never converted, and
 `.gitattributes` filters are bypassed too on git 2.40 or newer. `gate_rollback` restores only what
 changed since `gate_begin`; work that was already uncommitted then is kept. It previews by default
@@ -394,12 +421,13 @@ and needs `apply` to act.
 node dist/index.js gate begin --label "fix tax rounding"
 # ... edit ...
 node dist/index.js gate check          # exit code 1 when the verdict is regressed or mixed
+node dist/index.js gate check --scope tied   # only the tests tied to the changed files, if ria.config.json defines how
 node dist/index.js gate rollback       # preview; add --apply to do it
 ```
 
 **Gate limits.** It needs git and a writable repository (not `--no-cache`). `gate_begin` and
-`gate_check` run the whole commands, so a slow test suite makes them slow; progress messages are
-sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
+`gate_check` run the whole commands by default, so a slow test suite makes them slow (the baseline always does;
+`scope: "tied"` shortens later checks, see above); progress messages are sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
 and maven for tests, and tsc, eslint, gcc/clang, rustc, msbuild, ruff, mypy and go build for
 diagnostics. Anything else falls back to exit codes and says so.
 
@@ -764,7 +792,8 @@ commands for start, check and rollback.
 | Parser (tree-sitter) behind the same extraction interface | Methods, multi-line signatures, and `import` text inside strings are the main source of wrong edges (this repository's own tests create 24 false gaps) |
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
-| Gate mode that runs only the tests tied to changed files (plus typecheck) | Measured: the gate re-ran a 60-second suite twice per edit, so RIA's editing roles took up to twice as long as plain Claude Code on this repository ("Plain Claude Code against Claude Code with RIA"). The biggest cut to the overhead, and `impact` already knows which tests are tied |
+| Targeted tests for the common runners without writing a template (jest `--findRelatedTests`, vitest `related`, pytest, go test) | `scope: "tied"` is built (see "The change gate") but each project has to define its command in `ria.config.json`. Defaults for runners that can be recognised safely would make it work out of the box |
+| Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
 | A comparison on a repository that already has failing tests | The gate's main promise, that only new failures count, was not exercised by the clean repository used so far |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
@@ -826,7 +855,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 282 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 295 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
