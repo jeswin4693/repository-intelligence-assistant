@@ -11,7 +11,7 @@ import { CommandDiff, Structural, Verdict, compareCommand, confidenceOf, judge }
 import { CommandSpec, DEFAULT_TIMEOUT_SECONDS, detectCommands, loadGateConfig } from "./detect";
 import { parseOutput } from "./parse";
 import { runCommand } from "./runner";
-import { planTargeted } from "./targeted";
+import { planTargeted, targetedSetup } from "./targeted";
 import { Change, GateError, diffSnapshots, readAt, requireGit, restoreChanges, snapshotExists, takeSnapshot } from "./snapshot";
 import { KEEP_RUNS, loadRun, newId, pruneRuns, refFor, runDir, saveRun } from "./store";
 import { CommandResult, RunState, Status } from "./types";
@@ -141,7 +141,8 @@ export async function gateBegin(env: GateEnv, opts: { label?: string; commands?:
     baselineUnresolved: unresolvedKeys(index.graph()),
   };
   saveRun(root, run);
-  return { id, text: formatBegin(run, detected.length === 0, Boolean(config.targeted?.test)) };
+  const targetedAvailable = Boolean(targetedSetup(root, config, specs.find((s) => s.name === "test")));
+  return { id, text: formatBegin(run, detected.length === 0, targetedAvailable) };
 }
 
 function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: boolean): string {
@@ -213,7 +214,8 @@ export async function gateCheck(
     if (!testSpec) {
       scopeNote = "Scope \"tied\" had no effect: this check does not run a test command.";
     } else {
-      const plan = planTargeted({ template: config.targeted?.test, index, changes, blast, baseline: run.baselineResults.find((b) => b.name === "test") });
+      const setup = targetedSetup(root, config, testSpec);
+      const plan = planTargeted({ template: setup?.template, runnable: setup?.runnable, index, changes, blast, baseline: run.baselineResults.find((b) => b.name === "test") });
       if ("reason" in plan) {
         scopeNote = `Scope "tied" ran the whole test command: ${plan.reason}.`;
       } else {

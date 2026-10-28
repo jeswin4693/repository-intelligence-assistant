@@ -36,7 +36,7 @@ Commands:
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
   gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
-                              [--scope tied]   run only the tests tied to the changed files (needs gate.targeted.test in ria.config.json)
+                              [--scope tied]   run only the tests tied to the changed files (jest, vitest, node --test and pytest are known; else gate.targeted.test in ria.config.json)
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
   route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)

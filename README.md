@@ -124,11 +124,11 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files, and why it falls back |
+| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files (the narrow commands RIA knows for jest, vitest, node --test and pytest), and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 295 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 307 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -193,7 +193,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 295 tests
+the prompt sets that check the role routing). All 307 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -411,9 +411,22 @@ change what runs, add `ria.config.json` at the repository root:
 A string replaces or adds a command, `null` turns one off. The default timeout is 600 seconds.
 
 **Faster checks while you iterate (`scope: "tied"`).** The baseline always runs everything, but a later check can run
-only the tests tied to the changed files. The project says how, in `ria.config.json`, with a `{files}` placeholder that
-RIA fills from its own list of tied tests (the tests named after or importing a changed file, those that reach it through
-the import graph, and any test file that changed):
+only the tests tied to the changed files (the tests named after or importing a changed file, those that reach it through
+the import graph, and any test file that changed). For the common runners RIA works the command out itself, from the
+project's own test script, and only when that script is exactly one known runner (so the narrow command is the same
+runner with the same options plus file names):
+
+| The project's test script | The narrowed command | Test files passed on |
+|---|---|---|
+| `node --test`, with plain node options before it (`node --import tsx --test`) | the script plus the files | any tied test file |
+| `jest`, optionally with `--ci --silent --runInBand -i --colors --no-color --forceExit --passWithNoTests --watchAll=false` | `npx --no-install jest --runTestsByPath <same options> <files>` | `*.test.*`, `*.spec.*`, files in `__tests__/` |
+| `vitest` or `vitest run`, optionally with `--silent --passWithNoTests --watch=false --no-color --color` | `npx --no-install vitest run <same options> <files>` | `*.test.*`, `*.spec.*` |
+| pytest, found by RIA from its configuration or test files | `python -m pytest -q <files>` | `test_*.py`, `*_test.py` |
+
+Anything else (`jest --coverage`, `tsc && jest`, `cross-env ... jest`, mocha, a test glob already in the script, a
+`pnpm`, `yarn` or `bun` project, a command you wrote in `ria.config.json`) is left alone, and the whole command runs. Go
+is not narrowed because `go test` already caches the results of packages that did not change. The project can always say
+how itself, in `ria.config.json`, with a `{files}` placeholder; that wins over what RIA works out:
 
 ```json
 { "gate": { "targeted": { "test": "node --import tsx --test {files}" } } }
@@ -423,10 +436,18 @@ the import graph, and any test file that changed):
 Typecheck, build and lint still run in full. Running fewer tests can make a gate say "fine" about something it did not
 look at, so it only narrows when that is sound, and otherwise runs the whole command and says why in the report:
 
-- the project defined the command (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
+- RIA knows the command, as above, or the project defined it (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
 - the tests were green at the baseline (with failures already there, only a full run tells a new failure from an old one);
+- no configuration file changed in the same edit (`package.json`, lockfiles, `tsconfig*.json`, `jest.config.*`,
+  `vitest.config.*`, `vite.config.*`, `babel.config.*`, `pytest.ini`, `tox.ini`, `setup.cfg`, `pyproject.toml`,
+  `conftest.py`, `requirements*.txt`, `ria.config.json`), because those can change what every test does;
 - some test is tied to the change, and not more than 60% of the test files (past that there is nothing to save);
 - every tied file name is plainly safe to put in a command (letters, digits and `_ . / @ + -`).
+
+Checked for real on small projects with jest 30, vitest and pytest 9 installed: the baseline passed, a harmless edit
+ran only the tied test file and passed, a deliberate break was caught as `regressed` from the narrowed run, and an edit
+to `conftest.py` ran the whole suite with the reason printed. Those projects have 4 tests, so they show that it works,
+not that it is faster: `npx` start-up costs about as much as the tests save.
 
 A narrowed result is marked `PARTIAL` in the report, is not read as "fewer tests ran", can still find a regression in a
 tied test, and caps the confidence at medium with the instruction to finish with a check without a scope. The roles that
@@ -447,7 +468,7 @@ and needs `apply` to act.
 node dist/index.js gate begin --label "fix tax rounding"
 # ... edit ...
 node dist/index.js gate check          # exit code 1 when the verdict is regressed or mixed
-node dist/index.js gate check --scope tied   # only the tests tied to the changed files, if ria.config.json defines how
+node dist/index.js gate check --scope tied   # only the tests tied to the changed files (jest, vitest, node --test, pytest, or ria.config.json)
 node dist/index.js gate rollback       # preview; add --apply to do it
 ```
 
@@ -818,7 +839,7 @@ commands for start, check and rollback.
 | Parser (tree-sitter) behind the same extraction interface | Methods, multi-line signatures, and `import` text inside strings are the main source of wrong edges (this repository's own tests create 24 false gaps) |
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
-| Targeted tests for the common runners without writing a template (jest `--findRelatedTests`, vitest `related`, pytest, go test) | `scope: "tied"` is built (see "The change gate") but each project has to define its command in `ria.config.json`. Defaults for runners that can be recognised safely would make it work out of the box |
+| Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
 | Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
 | `scope: "tied"` on a red baseline, reporting regressions only | A red baseline now forces the full run, which is why the Writer job took 3.7 times as long with RIA in the failing-tests comparison. Failures can be compared by name, so a narrowed run could still catch new failures; it could not claim "improved" |
 | Background gate runs with a status call | Very long suites and host timeouts |
@@ -881,7 +902,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 295 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 307 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
