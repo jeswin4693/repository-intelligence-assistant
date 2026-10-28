@@ -14,7 +14,9 @@ import { CommandResult } from "./types";
  *  - the project said how to run a subset (`gate.targeted.test` in ria.config.json), or its own test script is one RIA
  *    knows how to narrow (see `targetedSetup`): a command is never made up from the caller of the tool, who only picks
  *    a scope;
- *  - the tests were green at the baseline: with failures already there, only the whole run can tell new from old;
+ *  - the tests were green at the baseline, or failed with every failing test named: a later run can then be compared
+ *    failure by failure. It can show new failures but never a fix, because a test missing from a partial run was not
+ *    necessarily fixed (see `compareCommand`). Failures RIA cannot name need the whole run to tell new from old;
  *  - no configuration file changed: a changed `package.json`, `jest.config.*` or `conftest.py` can affect every test;
  *  - some test is tied to the change, and not most of them (then there is nothing to save).
  */
@@ -38,7 +40,13 @@ export interface TargetedSetup {
   runnable?: RegExp;
 }
 
-export type TargetedPlan = { command: string; files: string[]; of: number } | { reason: string };
+/** `knownFailures` is how many tests were already failing at the baseline (0 when it was green). */
+export type TargetedPlan = { command: string; files: string[]; of: number; knownFailures: number } | { reason: string };
+
+/** A failing result that names every failing test, so a later run can be compared with it failure by failure. */
+export function failuresNamed(r: CommandResult): boolean {
+  return r.status === "fail" && r.failedTests.length > 0 && r.tests !== undefined && r.failedTests.length >= r.tests.failed;
+}
 
 // ---------------------------------------------------------------- what RIA knows about test commands
 
@@ -115,8 +123,8 @@ export function planTargeted(opts: {
   if (!template) return { reason: "no targeted test command is configured or known for this test command (add gate.targeted.test, with a {files} placeholder, to ria.config.json)" };
   if (!template.includes("{files}")) return { reason: "gate.targeted.test in ria.config.json has no {files} placeholder" };
   if (!baseline) return { reason: "no test command was run at the baseline, so there is nothing to compare a partial run with" };
-  if (baseline.status !== "pass") {
-    return { reason: "the tests were already failing at the baseline, and only a full run can tell a new failure from an old one" };
+  if (baseline.status !== "pass" && !failuresNamed(baseline)) {
+    return { reason: "the tests were already failing at the baseline and RIA could not name every failing test, so only a full run can tell a new failure from an old one" };
   }
   const shared = changes.find((c) => AFFECTS_EVERY_TEST.test(c.path));
   if (shared) return { reason: `${shared.path} changed, which can change what every test does` };
@@ -134,5 +142,5 @@ export function planTargeted(opts: {
   const files = [...tied].sort();
   if (files.some((f) => !SAFE_PATH.test(f))) return { reason: "a tied test has a path with characters that are not safe to put in a command" };
 
-  return { command: template.split("{files}").join(files.join(" ")), files, of: total };
+  return { command: template.split("{files}").join(files.join(" ")), files, of: total, knownFailures: baseline.status === "pass" ? 0 : baseline.failedTests.length };
 }

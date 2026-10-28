@@ -226,7 +226,7 @@ export function createServer(index: RepoIndex): McpServer {
         scope: z
           .enum(["full", "tied"])
           .optional()
-          .describe('"tied": run only the tests tied to the changed files, when RIA knows how to narrow the test command (jest, vitest, node --test, pytest, or ria.config.json) and the baseline was green; otherwise the whole command runs and the report says why. Faster while iterating, so finish with a check without a scope. Default: full.'),
+          .describe('"tied": run only the tests tied to the changed files, when RIA knows how to narrow the test command (jest, vitest, node --test, pytest, or ria.config.json) and the baseline was green or its failing tests can all be named (a partial run never reports a fix); otherwise the whole command runs and the report says why. Faster while iterating, so finish with a check without a scope. Default: full.'),
       },
       annotations: runsCommands,
     },

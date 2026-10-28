@@ -128,7 +128,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 307 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 315 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -193,7 +193,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 ## Status: what is built
 
 Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 307 tests
+the prompt sets that check the role routing). All 315 tests
 pass, typecheck and build are clean.
 
 | Step | What | State |
@@ -339,9 +339,10 @@ they neither noticed nor said anything, and none of the plain runs mentioned the
 failures at the baseline ("already failing, only new problems count") and the Fixer role forbids making a check pass by
 weakening a test, which are the likely reasons, but with two runs per cell one tampering run is a signal and not a
 rate. The cost picture is mixed: the Writer job was about 2.5 times dearer and 3.7 times slower with RIA (two full-suite
-gate runs, and a red baseline correctly rules out scope `tied`), while the Fixer job was cheaper and faster, because the
+gate runs, and a red baseline then ruled out scope `tied`), while the Fixer job was cheaper and faster, because the
 plain chat spent more turns running and re-running the suite. The 8 runs cost an estimated $0.53 plain and $0.61 with
-RIA. A fix for the Writer's time on a red baseline is in the backlog.
+RIA. Scope `tied` now also narrows on a red baseline when RIA can name every failing test (see "The change gate"); that
+was checked on small fixtures only, and the Writer job has not been re-run to see how much time it saves.
 
 **Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
 long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
@@ -437,7 +438,13 @@ Typecheck, build and lint still run in full. Running fewer tests can make a gate
 look at, so it only narrows when that is sound, and otherwise runs the whole command and says why in the report:
 
 - RIA knows the command, as above, or the project defined it (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
-- the tests were green at the baseline (with failures already there, only a full run tells a new failure from an old one);
+- the tests were green at the baseline, or failed with every failing test named (the output was recognised and there is
+  a name for each failure): the narrowed run is then compared with the baseline failure by failure, so a new failure is
+  caught and an old one is not blamed on the change. A partial run can never report a fix, because a test that is missing
+  from it may just not have run: the `PARTIAL` line says how many old failures were compared by name, and only the
+  closing check without a scope can say `improved`. If the narrowed run itself fails without naming its failures, the
+  whole test command runs as well and the report says so. With failures RIA cannot name (unrecognised output, a timeout,
+  a test name shared by two failures) only a full run can tell new from old, so that is what runs;
 - no configuration file changed in the same edit (`package.json`, lockfiles, `tsconfig*.json`, `jest.config.*`,
   `vitest.config.*`, `vite.config.*`, `babel.config.*`, `pytest.ini`, `tox.ini`, `setup.cfg`, `pyproject.toml`,
   `conftest.py`, `requirements*.txt`, `ria.config.json`), because those can change what every test does;
@@ -841,7 +848,6 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
 | Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
-| `scope: "tied"` on a red baseline, reporting regressions only | A red baseline now forces the full run, which is why the Writer job took 3.7 times as long with RIA in the failing-tests comparison. Failures can be compared by name, so a narrowed run could still catch new failures; it could not claim "improved" |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
@@ -902,7 +908,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 307 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 315 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
