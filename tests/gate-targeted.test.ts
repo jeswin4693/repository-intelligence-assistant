@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { compareCommand, confidenceOf } from "../src/gate/compare";
 import { gateBegin, gateCheck } from "../src/gate/gate";
-import { planTargeted } from "../src/gate/targeted";
+import { failuresNamed, planTargeted } from "../src/gate/targeted";
 import { CommandResult } from "../src/gate/types";
 import { RepoIndex } from "../src/repo/repo-index";
 import { createServer } from "../src/server";
@@ -90,13 +90,13 @@ describe("gate_check with scope tied", () => {
   it("falls back to the whole command, and says why, whenever narrowing would not be sound", async () => {
     const note = (text: string) => /Note: Scope "tied" ran the whole test command: (.*)\./.exec(text)?.[1];
 
-    // the tests were already failing: only a full run tells a new failure from an old one
-    const red = project({ "src/math.js": MATH_BAD });
-    await gateBegin(red.env);
-    writeFiles(red.dir, { "src/math.js": `exports.add = (a, b) => a - b - 0;\n` });
-    const redCheck = await gateCheck(red.env, { scope: "tied" });
-    assert.match(note(redCheck.text)!, /already failing at the baseline/);
-    assert.match(redCheck.text, /\[node --test\]/);
+    // the tests were already failing and RIA cannot name the failures: only a full run tells a new failure from an old one
+    const unnamed = project({}, JSON.stringify({ gate: { commands: { test: 'node -e "process.exit(1)"' }, targeted: { test: "node --test {files}" } } }));
+    await gateBegin(unnamed.env);
+    writeFiles(unnamed.dir, { "src/math.js": `exports.add = (a, b) => a + b + 0;\n` });
+    const redCheck = await gateCheck(unnamed.env, { scope: "tied" });
+    assert.match(note(redCheck.text)!, /already failing at the baseline and RIA could not name every failing test/);
+    assert.match(redCheck.text, /\[node -e "process\.exit\(1\)"\]/);
     assert.doesNotMatch(redCheck.text, /PARTIAL/);
 
     // no targeted command defined
@@ -145,10 +145,96 @@ describe("gate_check with scope tied", () => {
   });
 });
 
+describe("gate_check with scope tied on a baseline that was already failing", () => {
+  // the baseline fails two tests of test/math.test.js; test/other.test.js passes
+  const red = () => project({ "src/math.js": MATH_BAD });
+
+  it("narrows the run, names the old failures it compares by, and does not blame the change for them", async () => {
+    const { dir, env } = red();
+    const begin = await gateBegin(env);
+    assert.match(begin.text, /test\s+FAILED \(1 passed, 2 failed\)/);
+    writeFiles(dir, { "src/other.js": `exports.mul = (a, b) => a * b * 1;\n` });
+
+    const r = await gateCheck(env, { scope: "tied" });
+    assert.equal(r.verdict, "unchanged");
+    assert.match(r.text, /\[node --test test\/other\.test\.js\]/, "only the tied file was run");
+    assert.match(r.text, /PARTIAL: only the 1 test file \(of 2\) tied to the changed files ran; the 2 tests already failing at the baseline are compared by name, so a fix to them is not reported\./);
+    assert.doesNotMatch(r.text, /Scope "tied" ran the whole test command|new failing tests/);
+    assert.match(r.text, /finish with a gate_check without a scope/);
+  });
+
+  it("still catches a new failure in a tied test", async () => {
+    const { dir, env } = red();
+    await gateBegin(env);
+    writeFiles(dir, { "src/other.js": `exports.mul = (a, b) => a + b;\n` });
+    const r = await gateCheck(env, { scope: "tied" });
+    assert.equal(r.verdict, "regressed");
+    assert.match(r.text, /new failing tests: multiplies/);
+    assert.match(r.text, /PARTIAL/);
+  });
+
+  it("does not read the old failures going missing from a partial run as a fix, but the full check does", async () => {
+    const { dir, env } = red();
+    await gateBegin(env);
+    writeFiles(dir, { "src/math.js": MATH });
+
+    const partial = await gateCheck(env, { scope: "tied" });
+    assert.equal(partial.verdict, "unchanged", "the old failures are absent from the tied run, and a partial run cannot tell fixed from not run");
+    assert.doesNotMatch(partial.text, /fixed tests/);
+    assert.match(partial.text, /PARTIAL/);
+
+    const full = await gateCheck(env);
+    assert.equal(full.verdict, "improved");
+    assert.match(full.text, /fixed tests: adds, adds again/);
+    assert.doesNotMatch(full.text, /PARTIAL/);
+  });
+
+  it("runs the whole command as well when the narrowed run fails without naming its failures", async () => {
+    // the targeted command always fails and prints nothing RIA understands; the project's own command is the real one
+    const config = JSON.stringify({ gate: { commands: { test: "node --test" }, targeted: { test: 'node -e "process.exit(1)" {files}' } } });
+    const { dir, env } = project({ "src/math.js": MATH_BAD }, config);
+    await gateBegin(env);
+    writeFiles(dir, { "src/other.js": `exports.mul = (a, b) => a * b * 1;\n` });
+
+    const r = await gateCheck(env, { scope: "tied" });
+    assert.match(r.text, /Note: Scope "tied" ran the tied tests first, but their failures could not be told apart from the ones already there, so the whole test command ran as well\./);
+    assert.match(r.text, /\[node --test\]/, "the result that counts is the whole command's");
+    assert.doesNotMatch(r.text, /PARTIAL/);
+    assert.equal(r.verdict, "unchanged", "the old failures are the same, so the change is not blamed for them");
+  });
+});
+
 describe("what a partial result means", () => {
   const result = (over: Partial<CommandResult> = {}): CommandResult => ({
     name: "test", command: "node --test", status: "pass", exitCode: 0, durationMs: 1, failedTests: [], diagnostics: [], parsed: true, outputTail: "",
     tests: { passed: 10, failed: 0, skipped: 0, total: 10 }, ...over,
+  });
+  const failing = (names: string[], over: Partial<CommandResult> = {}) =>
+    result({ status: "fail", exitCode: 1, failedTests: names, tests: { passed: 10 - names.length, failed: names.length, skipped: 0, total: 10 }, ...over });
+
+  it("never reports a fix, because a test missing from it may simply not have run", () => {
+    const before = failing(["old one", "old two"]);
+    const partialPass = result({ partial: "only the 1 test file (of 4) tied to the changed files ran", tests: { passed: 3, failed: 0, skipped: 0, total: 3 } });
+    const diff = compareCommand(before, partialPass);
+    assert.equal(diff.outcome, "unchanged");
+    assert.deepEqual(diff.fixedTests, []);
+    assert.deepEqual(diff.notes, []);
+
+    const full = compareCommand(before, result());
+    assert.equal(full.outcome, "improved", "the same result from a full run is a fix");
+    assert.deepEqual(full.fixedTests, ["old one", "old two"]);
+  });
+
+  it("separates new failures from the ones already there", () => {
+    const before = failing(["old one", "old two"]);
+    const sameOld = compareCommand(before, failing(["old one"], { partial: "x", tests: { passed: 2, failed: 1, skipped: 0, total: 3 } }));
+    assert.equal(sameOld.outcome, "unchanged");
+    assert.deepEqual(sameOld.newFailedTests, []);
+
+    const newOne = compareCommand(before, failing(["old one", "brand new"], { partial: "x", tests: { passed: 1, failed: 2, skipped: 0, total: 3 } }));
+    assert.equal(newOne.outcome, "regressed");
+    assert.deepEqual(newOne.newFailedTests, ["brand new"]);
+    assert.deepEqual(newOne.fixedTests, []);
   });
 
   it("does not read fewer tests as tests that were deleted, but still reads new failures as regressions", () => {
@@ -199,8 +285,40 @@ describe("planTargeted", () => {
     assert.match(reason(planTargeted({ ...base, template: undefined, baseline: pass })), /no targeted test command is configured/);
     assert.match(reason(planTargeted({ ...base, template: "x", baseline: pass })), /no \{files\} placeholder/);
     assert.match(reason(planTargeted({ ...base, template: "x {files}", baseline: undefined })), /no test command was run at the baseline/);
-    assert.match(reason(planTargeted({ ...base, template: "x {files}", baseline: { name: "test", status: "fail" } as CommandResult })), /already failing at the baseline/);
+    const unnamed = { name: "test", status: "fail", failedTests: [], parsed: false } as unknown as CommandResult;
+    assert.match(reason(planTargeted({ ...base, template: "x {files}", baseline: unnamed })), /already failing at the baseline and RIA could not name every failing test/);
     assert.match(reason(planTargeted({ ...base, template: "x {files}", baseline: pass })), /no test is tied to the changed files/);
+  });
+
+  it("goes ahead on a baseline that was failing when every failing test is named, and says how many", () => {
+    const index = new RepoIndex(project().dir, { cache: false });
+    index.refresh();
+    const blast = { tests: [{ path: "test/math.test.js", why: "imports it" }] } as unknown as ImpactResult;
+    const named = { name: "test", status: "fail", failedTests: ["adds", "adds again"], tests: { passed: 1, failed: 2, skipped: 0, total: 3 } } as unknown as CommandResult;
+    const plan = planTargeted({ template: "node --test {files}", index, changes: [{ path: "src/math.js", status: "M" }], blast, baseline: named });
+    assert.ok(!("reason" in plan), "reason" in plan ? plan.reason : "");
+    assert.equal(plan.knownFailures, 2);
+    assert.equal(plan.command, "node --test test/math.test.js");
+
+    const green = planTargeted({ template: "node --test {files}", index, changes: [{ path: "src/math.js", status: "M" }], blast, baseline: { name: "test", status: "pass" } as CommandResult });
+    assert.ok(!("reason" in green));
+    assert.equal(green.knownFailures, 0);
+  });
+});
+
+describe("failuresNamed", () => {
+  const fail = (over: Partial<CommandResult>) =>
+    ({ name: "test", status: "fail", failedTests: ["a", "b"], tests: { passed: 1, failed: 2, skipped: 0, total: 3 }, ...over }) as unknown as CommandResult;
+
+  it("is true only when a failing result names every one of its failing tests", () => {
+    assert.equal(failuresNamed(fail({})), true);
+    assert.equal(failuresNamed(fail({ failedTests: ["a", "b", "c"] })), true, "more names than failures is fine");
+    assert.equal(failuresNamed(fail({ status: "pass" })), false, "a passing result has nothing to name");
+    assert.equal(failuresNamed(fail({ status: "timeout" })), false);
+    assert.equal(failuresNamed(fail({ status: "error" })), false);
+    assert.equal(failuresNamed(fail({ failedTests: [] })), false, "no names");
+    assert.equal(failuresNamed(fail({ failedTests: ["a"] })), false, "one name for two failures: a new failure could hide behind it");
+    assert.equal(failuresNamed(fail({ tests: undefined })), false, "no counts to check the names against");
   });
 });
 

@@ -11,7 +11,7 @@ import { CommandDiff, Structural, Verdict, compareCommand, confidenceOf, judge }
 import { CommandSpec, DEFAULT_TIMEOUT_SECONDS, detectCommands, loadGateConfig } from "./detect";
 import { parseOutput } from "./parse";
 import { runCommand } from "./runner";
-import { planTargeted } from "./targeted";
+import { failuresNamed, planTargeted, targetedSetup } from "./targeted";
 import { Change, GateError, diffSnapshots, readAt, requireGit, restoreChanges, snapshotExists, takeSnapshot } from "./snapshot";
 import { KEEP_RUNS, loadRun, newId, pruneRuns, refFor, runDir, saveRun } from "./store";
 import { CommandResult, RunState, Status } from "./types";
@@ -141,7 +141,8 @@ export async function gateBegin(env: GateEnv, opts: { label?: string; commands?:
     baselineUnresolved: unresolvedKeys(index.graph()),
   };
   saveRun(root, run);
-  return { id, text: formatBegin(run, detected.length === 0, Boolean(config.targeted?.test)) };
+  const targetedAvailable = Boolean(targetedSetup(root, config, specs.find((s) => s.name === "test")));
+  return { id, text: formatBegin(run, detected.length === 0, targetedAvailable) };
 }
 
 function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: boolean): string {
@@ -206,25 +207,38 @@ export async function gateCheck(
 
   // Scope "tied" narrows only the test command, and only when it is sound; otherwise the whole command runs and says why.
   let toRun = specs;
-  let targeted: { files: string[]; of: number } | undefined;
+  let targeted: { files: string[]; of: number; knownFailures: number } | undefined;
+  let fullTest: CommandSpec | undefined;
   let scopeNote: string | undefined;
   if (opts.scope === "tied") {
     const testSpec = specs.find((s) => s.name === "test");
     if (!testSpec) {
       scopeNote = "Scope \"tied\" had no effect: this check does not run a test command.";
     } else {
-      const plan = planTargeted({ template: config.targeted?.test, index, changes, blast, baseline: run.baselineResults.find((b) => b.name === "test") });
+      const setup = targetedSetup(root, config, testSpec);
+      const plan = planTargeted({ template: setup?.template, runnable: setup?.runnable, index, changes, blast, baseline: run.baselineResults.find((b) => b.name === "test") });
       if ("reason" in plan) {
         scopeNote = `Scope "tied" ran the whole test command: ${plan.reason}.`;
       } else {
         toRun = specs.map((s) => (s === testSpec ? { ...s, command: plan.command } : s));
         targeted = plan;
+        fullTest = testSpec;
       }
     }
   }
-  const results = await runSpecs(env, toRun, dir, `check-${Date.now()}`, timeout);
-  if (targeted) {
-    for (const r of results) if (r.name === "test") r.partial = `only the ${plural(targeted.files.length, "test file")} (of ${targeted.of}) tied to the changed files ran`;
+  const stamp = `check-${Date.now()}`;
+  const results = await runSpecs(env, toRun, dir, stamp, timeout);
+  if (targeted && fullTest) {
+    const at = results.findIndex((r) => r.name === "test");
+    if (targeted.knownFailures > 0 && results[at].status !== "pass" && !failuresNamed(results[at])) {
+      // With failures already there, a narrowed run that fails without naming its failures cannot say which are new.
+      [results[at]] = await runSpecs(env, [fullTest], dir, `${stamp}-full`, timeout);
+      scopeNote = "Scope \"tied\" ran the tied tests first, but their failures could not be told apart from the ones already there, so the whole test command ran as well.";
+      targeted = undefined;
+    } else {
+      const known = targeted.knownFailures ? `; the ${plural(targeted.knownFailures, "test")} already failing at the baseline are compared by name, so a fix to them is not reported` : "";
+      results[at].partial = `only the ${plural(targeted.files.length, "test file")} (of ${targeted.of}) tied to the changed files ran${known}`;
+    }
   }
 
   const after = takeSnapshot(root, dir, `RIA gate after-checks ${run.id}`);

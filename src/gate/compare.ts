@@ -58,20 +58,22 @@ export function compareCommand(before: CommandResult | undefined, after: Command
   if (!failing(before) && failing(after)) {
     regressed = true;
     diff.notes.push(`${after.name} ${describe(before)} before and now ${describe(after)}`);
-  } else if (failing(before) && !failing(after)) {
+  } else if (failing(before) && !failing(after) && !after.partial) {
     improved = true;
     diff.notes.push(`${after.name} ${describe(before)} before and now passes`);
   }
 
+  // A partial run did not run everything, so something missing from it was not necessarily fixed: it can show new
+  // problems and never fixed ones. This matters when the baseline was already failing.
   diff.newFailedTests = minus(after.failedTests, before.failedTests);
-  diff.fixedTests = minus(before.failedTests, after.failedTests);
+  diff.fixedTests = after.partial ? [] : minus(before.failedTests, after.failedTests);
   if (diff.newFailedTests.length) regressed = true;
   if (diff.fixedTests.length) improved = true;
 
   const beforeKeys = before.diagnostics.map(diagKey);
   const afterKeys = after.diagnostics.map(diagKey);
   diff.newDiagnostics = after.diagnostics.filter((d) => !beforeKeys.includes(diagKey(d)));
-  diff.fixedDiagnostics = before.diagnostics.filter((d) => !afterKeys.includes(diagKey(d)));
+  diff.fixedDiagnostics = after.partial ? [] : before.diagnostics.filter((d) => !afterKeys.includes(diagKey(d)));
   if (diff.newDiagnostics.some((d) => d.severity === "error")) regressed = true;
   if (diff.fixedDiagnostics.some((d) => d.severity === "error")) improved = true;
 
@@ -82,7 +84,7 @@ export function compareCommand(before: CommandResult | undefined, after: Command
       regressed = true;
       diff.notes.push(`failing tests went from ${b.failed} to ${a.failed}`);
     }
-    if (a.failed < b.failed && diff.fixedTests.length === 0) improved = true;
+    if (a.failed < b.failed && diff.fixedTests.length === 0 && !after.partial) improved = true;
     // a partial run (only the tied tests) is expected to run fewer, so the totals say nothing
     if (!after.partial) {
       if (a.total < b.total) diff.notes.push(`fewer tests ran (${b.total} -> ${a.total}); check that no tests were deleted or switched off by accident`);

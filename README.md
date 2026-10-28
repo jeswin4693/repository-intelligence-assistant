@@ -66,7 +66,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 4. **Safe by design.** The model can choose among the project's own commands but cannot supply
    one. Rollback previews before it acts. RIA writes only to `.ria/` and, for gate snapshots, to
    private git objects and refs (`refs/ria/*`); it never touches your index, stash or branches.
-   Anything fetched from the web is untrusted (when the skill forge exists).
+   Anything fetched from the web is untrusted: the skill forge hands it to the chat as data inside a fence, with a pattern check on top.
 5. **Verify, do not trust.** A change is not done until the gate has compared it with a baseline.
 
 **What makes it different from other repo assistants**
@@ -75,7 +75,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 |---|---|---|
 | Verified change loop | Baseline before an edit, comparison after, verdict, byte-exact undo | **Built** |
 | Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and ignored coupling before editing | **Built** |
-| Skill forge | Learn from web sources into reusable skills, with provenance, sandbox test and human approval | Planned (step 5) |
+| Skill forge | Learn from web sources into reusable skills, with provenance, sandbox test and human approval | **Half built** (step 5): `fetch_source` and `skill_scaffold` make a draft with provenance; the sandbox test and the approval are next |
 | Roles as configuration | Reader, Analyser, Extractor, Writer, Fixer, Reviewer and Autopilot are instruction files that tell the chat which RIA tools to use in which order; `ria init` installs them for Claude Code and Copilot | **Built** |
 | The role follows the request | The wording of each request picks the role (a router with no model in it): a `start_task` tool for any chat, and a Claude Code hook that adds the role to every request | **Built**, checked in Claude Code |
 
@@ -91,6 +91,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  |  repo_map  context_for  find_path  impact    |   NAVIGATION        |  ria map | context |     |
  |  plan_score                                  |   PLANNING          |  path | impact | plan    |
  |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  gate ... | init         |
+ |  fetch_source  skill_scaffold                |   SKILL FORGE       |  fetch | skill scaffold  |
  +----------------------+-----------------------+                     +--------------------------+
                         |
         +---------------+------------------------------+
@@ -103,10 +104,10 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
   incremental cache (.ria/index.json)              compare    new vs fixed problems -> verdict + confidence
         |                                                |
         v                                                v
- your repository (read only)        .ria/  (index cache, gate runs; ignores itself)
+ your repository (read only)        .ria/  (index cache, gate runs, fetched sources, draft skills; ignores itself)
                                     .git/refs/ria/gate/<run id>  (snapshot commits)
 
- Planned on top: skill forge, VS Code extension.
+ Planned on top: the skill forge's sandbox test and approval, VS Code extension.
 ```
 
 ### Code map
@@ -124,11 +125,14 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/detect.ts`, `runner.ts` | Find the project's commands; run them with timeout and heartbeat |
 | | `src/gate/parse.ts`, `compare.ts` | Read test and compiler output; compare with baseline; verdict and confidence |
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
-| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files, and why it falls back |
+| | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files (the narrow commands RIA knows for jest, vitest, node --test and pytest), and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 295 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, real MCP client over stdio |
+| Skill forge | `src/skills/fetch-source.ts` | `fetch_source`: one public web page, with the address rules, limits and the report the chat sees |
+| | `src/skills/sanitize.ts` | A page to plain text (a hand-written one-pass HTML reader), and the pattern check for text that tries to give the chat orders |
+| | `src/skills/scaffold.ts`, `store.ts` | `skill_scaffold`: a draft folder with `SKILL.md` and `provenance.json`; the record of each fetch under `.ria/skills/sources/` |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts` | 424 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -151,6 +155,14 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
   verdict, confidence and "may be affected".
 - **`gate_rollback`**: snapshot now -> diff against the baseline -> preview, or restore changed
   files and delete added ones -> verify the tree matches the baseline again.
+- **`fetch_source`**: check the address (http or https, a plain port, no credentials) -> connect, resolving the name
+  through a lookup that refuses any answer that is not a public address -> read up to 1 MB in 20 s, following at most 4
+  redirects, each checked like the first address -> reduce the page to text, flag what looks like an attack on the chat
+  -> record address, time, SHA-256 and flags under `.ria/skills/sources/<id>.json` -> show the chat the text inside a
+  fence marked UNTRUSTED.
+- **`skill_scaffold`**: check the name, the one-line description and the body -> load each source id (its checksum must
+  still match) -> make `.ria/skills/drafts/<name>/` (an existing draft is an error) -> write `SKILL.md` with front matter
+  RIA wrote itself and `provenance.json` copied from the fetch records.
 
 ### On-disk state
 
@@ -159,6 +171,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | `.ria/index.json` | Per-file symbols, imports, size, mtime | Safe to delete; rebuilt on the next call |
 | `.ria/gate/<id>/` | `run.json`, the private snapshot index (`raw.idx`), command logs | Last 5 runs kept, older ones pruned at `gate_begin` |
 | `.git/refs/ria/gate/<id>` | The baseline snapshot commit, so git does not collect it | Dropped with its run |
+| `.ria/skills/sources/<id>.json` | What `fetch_source` saw: address, time, SHA-256, the page's text, flags | Delete freely; a draft that names a missing source cannot be made again |
+| `.ria/skills/drafts/<name>/` | `SKILL.md` and `provenance.json` of a draft skill; nothing loads it | Delete the folder to discard the draft |
 | `.ria/.gitignore` | Contains `*`, so `.ria/` never shows in `git status` or in a snapshot | |
 
 ### Design decisions
@@ -179,6 +193,12 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Run ids end in milliseconds plus random hex and are matched against an exact pattern | Runs sort in creation order, and an id from tool input can never become a path |
 | `core.longpaths=true` on every git call, short scratch file names | Deep folders (OneDrive) pass Windows' 260-character limit once git adds `.lock` files |
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
+| `fetch_source` takes only a URL and a length: no option for private addresses, ports, limits or headers, and the tests' own switch is a code parameter nothing in the tool, the CLI or the environment can reach | A page, or a chat reading one, must not be able to point RIA at the machine's own network |
+| Addresses are checked inside the name lookup used to connect, on every redirect, and a name that resolves to any private address is refused whole | Checking a name first and connecting later lets a name answer differently the second time; a public page can redirect to a private one |
+| A skill's provenance is copied from RIA's record of the fetch, by source id, and the record carries a checksum of its own text | The chat can say which pages it learned from but cannot describe them differently; a record edited afterwards is refused |
+| Front matter is three lines RIA writes: the name must match a pattern, the description is one line and is written as a quoted string | A newline in the description could otherwise add keys such as `allowed-tools` to the skill |
+| A draft is made under `.ria/skills/drafts/` and never overwritten, and nothing loads it | Enabling a skill is a decision for a person, not a side effect of drafting one |
+| The page is read by a hand-written one-pass HTML reader, not by one big regular expression | A regular expression version took minutes on a 20 MB page, and a page that is a megabyte of `<a x="` could hold the server just as long; the one-pass reader takes 0.9 s for the 20 MB page and about 0.1 s for each hostile megabyte |
 | `plan_score` returns points per factor, not one opaque number, and says when a figure was capped | The chat (and you) can see why a plan won, and a saturated figure does not look exact |
 | Plans that name files outside the index are scored as creating them; ambiguous names and directories are errors | A typo would score as a new file, so the output says so; guessing between two files would change the ranking silently |
 | The roles are written once and rendered per host | Claude Code skills and VS Code agents differ only in their header, so one edit changes both and a test checks both against the real tool list |
@@ -192,9 +212,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 4 and 6 are done. About 5,800 lines of source and 4,000 lines of tests (a third of the test lines are
-the prompt sets that check the role routing). All 295 tests
-pass, typecheck and build are clean.
+Steps 1 to 4 and 6 are done, and the first half of step 5. About 7,200 lines of source and 5,400 lines of tests. All 424
+tests pass, typecheck and build are clean.
 
 | Step | What | State |
 |---|---|---|
@@ -202,7 +221,7 @@ pass, typecheck and build are clean.
 | 2 | Change gate: `gate_begin`, `gate_check`, `gate_rollback` | Done |
 | 3 | Plan scoring: `plan_score` | Done |
 | 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init`, with the role chosen from each request (`start_task`, a Claude Code hook) | Done |
-| 5 | Skill forge | To do |
+| 5 | Skill forge: `fetch_source`, `skill_scaffold`; then `skill_test` and `skill_register` | First half done (fetch and draft); test and approval to do |
 | 6 | Eval harness: `ria eval history`, `ria eval gate` | Done |
 | 7 | VS Code extension | Optional |
 
@@ -226,6 +245,17 @@ pass, typecheck and build are clean.
   and starts a real server from them. `ria init` was previewed on the 4,740-file repository (nothing written there,
   no `.ria/`), applied into a scratch folder, and the generated files were read as the chat would read them; that
   showed the Fixer's stop condition expected the wrong gate verdict, which is fixed and tested.
+- The skill forge, against a local web server (loopback allowed through a test-only parameter) and hostile fixtures:
+  redirects and loops, a size limit with a checksum of exactly what was kept, a small gzip file that expands to 5 MB, a
+  server that stops answering, a connection that breaks, a wrong content type, binary content, and 25 kinds of address
+  that must be refused with no hook at all (loopback, private, link-local and cloud-metadata addresses in every spelling
+  including IPv4-mapped IPv6, `localhost`, bad ports, credentials, other schemes). Writing the test that a public address
+  is accepted found a bug the refusals could not: a rule meant to catch mapped addresses refused every IPv4 address,
+  because Node's `BlockList` reads IPv4 as mapped. Running the page reader on a real 20 MB HTML file (Chromium's licence
+  page in VS Code) found that the first version, built on one regular expression, took minutes; it is now a hand-written
+  one-pass reader (0.9 s, and about 0.1 s for each of 17 hostile megabytes, all timed in tests). **Not tried on a live
+  website:** this machine has no direct outbound access (`curl` and plain Node time out alike, no proxy is set), so
+  TLS, a real DNS answer and a real server's headers were not exercised.
 
 **Measured so far.** One repository (a 4,740-file TypeScript test-automation project with 1,488 commits), read-only,
 with `ria eval history`. The numbers describe that repository and nothing else.
@@ -339,9 +369,10 @@ they neither noticed nor said anything, and none of the plain runs mentioned the
 failures at the baseline ("already failing, only new problems count") and the Fixer role forbids making a check pass by
 weakening a test, which are the likely reasons, but with two runs per cell one tampering run is a signal and not a
 rate. The cost picture is mixed: the Writer job was about 2.5 times dearer and 3.7 times slower with RIA (two full-suite
-gate runs, and a red baseline correctly rules out scope `tied`), while the Fixer job was cheaper and faster, because the
+gate runs, and a red baseline then ruled out scope `tied`), while the Fixer job was cheaper and faster, because the
 plain chat spent more turns running and re-running the suite. The 8 runs cost an estimated $0.53 plain and $0.61 with
-RIA. A fix for the Writer's time on a red baseline is in the backlog.
+RIA. Scope `tied` now also narrows on a red baseline when RIA can name every failing test (see "The change gate"); that
+was checked on small fixtures only, and the Writer job has not been re-run to see how much time it saves.
 
 **Not verified yet:** Copilot Chat, the role files in Copilot, behaviour against those hosts' tool-call timeouts on a
 long gate run, and any model other than the smallest Claude one. The history numbers come from one repository.
@@ -361,10 +392,13 @@ long gate run, and any model other than the smallest Claude one. The history num
 | `gate_begin` | `label`, `commands` (names) | Before the first edit: record the tree and run the project's checks as a baseline |
 | `gate_check` | `id`, `commands`, `scope` (`full` or `tied`) | After editing: re-run, compare, verdict; `tied` runs only the tests tied to the changed files when the project defines how |
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
+| `fetch_source` | `url`, `max_chars` (1000-100000, default 20000) | When the user asks you to learn from a web page: its text as plain text inside UNTRUSTED markers, a pattern check for text that gives orders, and a source id; the address, time and SHA-256 are recorded under `.ria/` |
+| `skill_scaffold` | `name`, `description`, `body`, `sources` (ids from `fetch_source`) | Turn what was learned into a draft skill with provenance; never overwrites a draft, never installs or enables anything |
 
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
-can be read in part. `start_task` and the navigation tools are marked read-only; the gate tools are not, and
-`gate_rollback` is marked destructive.
+can be read in part. `start_task` and the navigation tools are marked read-only; the gate tools and the forge tools
+are not, `gate_rollback` is marked destructive, and `fetch_source` is marked open-world because it reaches outside the
+machine. The roles do not use the forge tools yet: the server's instructions tell any chat when to use them.
 
 ---
 
@@ -411,9 +445,22 @@ change what runs, add `ria.config.json` at the repository root:
 A string replaces or adds a command, `null` turns one off. The default timeout is 600 seconds.
 
 **Faster checks while you iterate (`scope: "tied"`).** The baseline always runs everything, but a later check can run
-only the tests tied to the changed files. The project says how, in `ria.config.json`, with a `{files}` placeholder that
-RIA fills from its own list of tied tests (the tests named after or importing a changed file, those that reach it through
-the import graph, and any test file that changed):
+only the tests tied to the changed files (the tests named after or importing a changed file, those that reach it through
+the import graph, and any test file that changed). For the common runners RIA works the command out itself, from the
+project's own test script, and only when that script is exactly one known runner (so the narrow command is the same
+runner with the same options plus file names):
+
+| The project's test script | The narrowed command | Test files passed on |
+|---|---|---|
+| `node --test`, with plain node options before it (`node --import tsx --test`) | the script plus the files | any tied test file |
+| `jest`, optionally with `--ci --silent --runInBand -i --colors --no-color --forceExit --passWithNoTests --watchAll=false` | `npx --no-install jest --runTestsByPath <same options> <files>` | `*.test.*`, `*.spec.*`, files in `__tests__/` |
+| `vitest` or `vitest run`, optionally with `--silent --passWithNoTests --watch=false --no-color --color` | `npx --no-install vitest run <same options> <files>` | `*.test.*`, `*.spec.*` |
+| pytest, found by RIA from its configuration or test files | `python -m pytest -q <files>` | `test_*.py`, `*_test.py` |
+
+Anything else (`jest --coverage`, `tsc && jest`, `cross-env ... jest`, mocha, a test glob already in the script, a
+`pnpm`, `yarn` or `bun` project, a command you wrote in `ria.config.json`) is left alone, and the whole command runs. Go
+is not narrowed because `go test` already caches the results of packages that did not change. The project can always say
+how itself, in `ria.config.json`, with a `{files}` placeholder; that wins over what RIA works out:
 
 ```json
 { "gate": { "targeted": { "test": "node --import tsx --test {files}" } } }
@@ -423,10 +470,24 @@ the import graph, and any test file that changed):
 Typecheck, build and lint still run in full. Running fewer tests can make a gate say "fine" about something it did not
 look at, so it only narrows when that is sound, and otherwise runs the whole command and says why in the report:
 
-- the project defined the command (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
-- the tests were green at the baseline (with failures already there, only a full run tells a new failure from an old one);
+- RIA knows the command, as above, or the project defined it (a tool caller picks one of two words, `full` or `tied`, and never supplies a command);
+- the tests were green at the baseline, or failed with every failing test named (the output was recognised and there is
+  a name for each failure): the narrowed run is then compared with the baseline failure by failure, so a new failure is
+  caught and an old one is not blamed on the change. A partial run can never report a fix, because a test that is missing
+  from it may just not have run: the `PARTIAL` line says how many old failures were compared by name, and only the
+  closing check without a scope can say `improved`. If the narrowed run itself fails without naming its failures, the
+  whole test command runs as well and the report says so. With failures RIA cannot name (unrecognised output, a timeout,
+  a test name shared by two failures) only a full run can tell new from old, so that is what runs;
+- no configuration file changed in the same edit (`package.json`, lockfiles, `tsconfig*.json`, `jest.config.*`,
+  `vitest.config.*`, `vite.config.*`, `babel.config.*`, `pytest.ini`, `tox.ini`, `setup.cfg`, `pyproject.toml`,
+  `conftest.py`, `requirements*.txt`, `ria.config.json`), because those can change what every test does;
 - some test is tied to the change, and not more than 60% of the test files (past that there is nothing to save);
 - every tied file name is plainly safe to put in a command (letters, digits and `_ . / @ + -`).
+
+Checked for real on small projects with jest 30, vitest and pytest 9 installed: the baseline passed, a harmless edit
+ran only the tied test file and passed, a deliberate break was caught as `regressed` from the narrowed run, and an edit
+to `conftest.py` ran the whole suite with the reason printed. Those projects have 4 tests, so they show that it works,
+not that it is faster: `npx` start-up costs about as much as the tests save.
 
 A narrowed result is marked `PARTIAL` in the report, is not read as "fewer tests ran", can still find a regression in a
 tied test, and caps the confidence at medium with the instruction to finish with a check without a scope. The roles that
@@ -447,7 +508,7 @@ and needs `apply` to act.
 node dist/index.js gate begin --label "fix tax rounding"
 # ... edit ...
 node dist/index.js gate check          # exit code 1 when the verdict is regressed or mixed
-node dist/index.js gate check --scope tied   # only the tests tied to the changed files, if ria.config.json defines how
+node dist/index.js gate check --scope tied   # only the tests tied to the changed files (jest, vitest, node --test, pytest, or ria.config.json)
 node dist/index.js gate rollback       # preview; add --apply to do it
 ```
 
@@ -772,7 +833,7 @@ config (see "Roles and `ria init`" for what it writes, what it will not overwrit
 - The Claude Code `Stop` hook that enforces the loop (`ria hook stop`) and the hook that routes each request
   (`ria hook prompt`) are built, and `ria init --hooks` installs both.
 
-### Step 5: skill forge
+### Step 5: skill forge (first half done)
 
 **Goal.** Let the chat learn from the web into reusable skills safely.
 
@@ -782,9 +843,50 @@ flagged), `skill_scaffold` (create a skill folder with `SKILL.md` and `provenanc
 skill's declared checks with a timeout in a temporary copy, secrets removed from the environment), and
 `skill_register` (enable only after explicit user approval, pinned to a hash, re-approval when a source changes).
 
-**Verify.** Fixture pages with hostile instructions must be flagged and never obeyed; provenance
-round-trips; approval is required and cannot be skipped by a tool argument.
-**Honest limit.** Process sandboxing on Windows is weak. Treat it as a safety net, with human approval as the real boundary.
+**Built (2026-10-28): `fetch_source` and `skill_scaffold`.**
+
+- `fetch_source` takes a URL and a length. It fetches one page over http or https on port 80, 443, 8080 or 8443, with
+  no credentials in the address, from public addresses only: loopback, private, link-local (the cloud metadata address),
+  shared and reserved ranges are refused in every spelling, every address a name resolves to is checked at connect time,
+  and each of at most 4 redirects is checked like the first address (never from https to http). It reads at most 1 MB in
+  20 s, text types only (HTML, plain text, Markdown, JSON, XML), decompresses with the same size cap, sends no cookies or
+  credentials, and never skips certificate checks. The page becomes plain text: scripts, styles, frames, comments, elements
+  hidden by style and invisible characters (including a message written in Unicode tag characters) are removed and scanned,
+  not shown. A pattern check flags text that tells the reader to ignore its instructions, take a new role, hide something
+  from the user, read or send local secrets, install or enable something without approval, skip a confirmation, change an
+  agent's own configuration, pipe a download into a shell, or carry a long encoded blob; anything found in hidden text is
+  high severity. The chat receives RIA's own words, then the page inside a fence with a random marker the page cannot
+  know, told that it is data and never instructions. The address, time, SHA-256 and flags are recorded under
+  `.ria/skills/sources/` and an id is printed.
+- `skill_scaffold` takes a name, a one-line description, a Markdown body and source ids. The name must match a pattern,
+  the description must be one line, the front matter is three lines RIA writes, and provenance (address, time, hash, flags
+  without the quoted text) is copied from RIA's record of each fetch, whose checksum must still match. The result is a
+  draft under `.ria/skills/drafts/<name>/`: never overwritten, not installed, not loaded by anything. `provenance.json`
+  carries a hash of `SKILL.md` and an empty `approval`, for the next half to fill.
+- Also from the command line: `ria fetch <url>` and `ria skill scaffold <name> --description ... --body-file ... --source <id>`.
+  The server's instructions tell any chat when to use the two tools; the seven roles do not mention them yet.
+
+**Still to build: `skill_test` and `skill_register`.** `skill_register` is the real boundary: it must show a person
+the skill, its sources and every high flag, enable it only on their explicit approval (one that no tool argument can
+supply), pin the approval to the hash of `SKILL.md`, and ask again when a source changes. `skill_test` runs the
+skill's declared checks in a temporary copy with a timeout and the environment's secrets removed. Open question for
+`skill_register`: where an approved skill is installed (`.claude/skills` for Claude Code, `.github` for Copilot) and
+whether RIA may write there at all, since today it writes only under `.ria/`.
+
+**Honest limits.**
+
+- The checks on a page are patterns. They do not understand text: a page with no flags is not known to be safe, a
+  flagged page is often a legitimate one (an install guide really does say `curl ... | sh`), and a page can phrase an
+  order in a way no pattern matches. They point a reviewer at where to look; the person who approves the skill is the
+  boundary, and process sandboxing on Windows is weak, so `skill_test` will be a safety net only.
+- The fetcher does not use a proxy (`HTTPS_PROXY` is ignored) and does not trust a company's own certificate authority
+  unless `NODE_EXTRA_CA_CERTS` points at it. Behind a mandatory proxy it will not reach the web. Using one would make
+  the proxy, not RIA, the thing that decides which addresses are reached, so it should be a choice made in
+  `ria.config.json` and not a default.
+- A source record is a plain file under `.ria/` that a chat with file tools could also write. Its checksum catches
+  accidents and naive edits, not a chat that writes a consistent fake: that is what approval by a person is for.
+- Verified against a local server and hostile fixtures, and on one real 20 MB HTML file, but not on a live website (see
+  "How it was verified").
 
 ### Step 6: eval harness (done)
 
@@ -818,9 +920,8 @@ commands for start, check and rollback.
 | Parser (tree-sitter) behind the same extraction interface | Methods, multi-line signatures, and `import` text inside strings are the main source of wrong edges (this repository's own tests create 24 false gaps) |
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
-| Targeted tests for the common runners without writing a template (jest `--findRelatedTests`, vitest `related`, pytest, go test) | `scope: "tied"` is built (see "The change gate") but each project has to define its command in `ria.config.json`. Defaults for runners that can be recognised safely would make it work out of the box |
+| Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
 | Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
-| `scope: "tied"` on a red baseline, reporting regressions only | A red baseline now forces the full run, which is why the Writer job took 3.7 times as long with RIA in the failing-tests comparison. Failures can be compared by name, so a narrowed run could still catch new failures; it could not claim "improved" |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
@@ -874,6 +975,9 @@ commands for start, check and rollback.
 - The gate is only as strong as the project's tests. With no test command it can check imports and exports only,
   and it says its confidence is low.
 - The gate needs git and a writable repository. Gate runs block until the commands finish.
+- The skill forge's checks on a fetched page are patterns, not understanding (see "Step 5"): no flags is not proof of
+  safety. It does not use a proxy, it has not been run against a live website, and a draft skill is not tested or
+  approved yet, so nothing it makes is enabled.
 
 ---
 
@@ -881,7 +985,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 295 tests, about 1 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, MCP over stdio
+npm test            # 424 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

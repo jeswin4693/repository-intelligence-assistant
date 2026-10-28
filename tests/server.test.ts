@@ -39,7 +39,7 @@ after(async () => {
 describe("MCP server over stdio", () => {
   it("advertises the tools, marking only the navigation ones read-only, with guidance for the model", async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "start_task"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "fetch_source", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "skill_scaffold", "start_task"]);
     for (const t of tools) {
       assert.ok((t.description ?? "").length > 40, `${t.name} needs a real description`);
       const navigation = ["context_for", "find_path", "impact", "plan_score", "repo_map", "start_task"].includes(t.name);
