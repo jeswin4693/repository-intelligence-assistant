@@ -10,6 +10,8 @@ import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
 import { serve } from "./server";
+import { fetchSource, formatFetch } from "./skills/fetch-source";
+import { skillScaffold } from "./skills/scaffold";
 import { contextFor, formatContext } from "./tools/context";
 import { findPath, formatPath } from "./tools/find-path";
 import { formatImpact, impact } from "./tools/impact";
@@ -38,6 +40,9 @@ Commands:
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
                               [--scope tied]   run only the tests tied to the changed files (jest, vitest, node --test and pytest are known; else gate.targeted.test in ria.config.json)
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
+  fetch <url>                 Fetch one public web page as plain text, flag text that tries to give orders, record it under .ria/  [--max-chars <n>]
+  skill scaffold <name>       Draft a skill from fetched pages into .ria/skills/drafts/<name>/ (never installs it)
+                              --description <one line> --body-file <markdown file> --source <id> (repeat; ids printed by fetch)
   route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
   hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
@@ -95,12 +100,16 @@ function main(): void | Promise<void> {
       hooks: { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
+      "max-chars": { type: "string" },
       label: { type: "string" },
       commands: { type: "string" },
       id: { type: "string" },
       scope: { type: "string" },
       "max-blocks": { type: "string" },
       "max-age-hours": { type: "string" },
+      description: { type: "string" },
+      "body-file": { type: "string" },
+      source: { type: "string", multiple: true },
       apply: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -156,6 +165,28 @@ function main(): void | Promise<void> {
     if ("error" in plan) throw new Error(plan.error);
     const written = values.apply ? applyInit(root, plan) : 0;
     process.stdout.write((values.json ? JSON.stringify({ applied: written, ...plan }, null, 2) : formatInit(plan, root, values.apply === true)) + "\n");
+    return;
+  }
+
+  if (command === "fetch" || command === "skill") {
+    // before the index exists: the forge writes only under .ria/skills/ and has no use for the repository's files
+    if (!indexOptions.cache) throw new Error(`${command} stores its results under .ria/, so it cannot run with --no-cache or RIA_NO_CACHE`);
+    if (command === "fetch") {
+      if (args.length !== 1) throw new Error("fetch needs exactly one address: ria fetch <url>");
+      return fetchSource(root, args[0]).then((record) => {
+        process.stdout.write((values.json ? JSON.stringify(record, null, 2) : formatFetch(record, intOption(values["max-chars"], "max-chars"))) + "\n");
+      });
+    }
+    if (args[0] !== "scaffold") throw new Error("skill needs a subcommand: scaffold");
+    if (args.length !== 2) throw new Error("skill scaffold needs exactly one name: ria skill scaffold <name> --description ... --body-file ... --source <id>");
+    if (!values.description || !values["body-file"] || !values.source?.length) throw new Error("skill scaffold needs --description, --body-file and at least one --source");
+    const scaffolded = skillScaffold(root, {
+      name: args[1],
+      description: values.description,
+      body: fs.readFileSync(path.resolve(values["body-file"]), "utf8"),
+      sources: values.source,
+    });
+    process.stdout.write((values.json ? JSON.stringify(scaffolded, null, 2) : scaffolded.text) + "\n");
     return;
   }
 
