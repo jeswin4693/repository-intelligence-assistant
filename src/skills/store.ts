@@ -39,14 +39,80 @@ export const sha256 = (data: string | Buffer): string => crypto.createHash("sha2
 
 const SOURCE_ID = /^[0-9a-f]{16}$/;
 
+/** A skill's name is also a folder name, so it is held to this pattern wherever it came from a tool argument. */
+export const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const MAX_SKILL_NAME = 48;
+
 export const skillsDir = (root: string): string => path.join(riaDir(root), "skills");
 export const sourcesDir = (root: string): string => path.join(skillsDir(root), "sources");
 export const draftsDir = (root: string): string => path.join(skillsDir(root), "drafts");
+
+/** The folder of an existing draft. The name must match the pattern before it can become part of a path. */
+export function draftPath(root: string, name: string): string {
+  const n = name.trim();
+  if (!SKILL_NAME.test(n) || n.length > MAX_SKILL_NAME) throw new SkillError(`"${n.slice(0, 60)}" is not a skill name: lowercase letters and digits separated by single hyphens, as printed by skill_scaffold.`);
+  const dir = path.join(draftsDir(root), n);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new SkillError(`No draft named "${n}". Make one with skill_scaffold first.`);
+  return dir;
+}
 
 /** An id that came from a tool argument must match the exact pattern before it can become part of a path. */
 export function sourcePath(root: string, id: string): string {
   if (!SOURCE_ID.test(id)) throw new SkillError(`"${id.slice(0, 40)}" is not a source id: it is 16 hex digits, as printed by fetch_source.`);
   return path.join(sourcesDir(root), `${id}.json`);
+}
+
+export const recheckDir = (root: string): string => path.join(skillsDir(root), "rechecks");
+
+/** What re-fetching one source of a skill showed. `not checked` is not "unchanged": the page could not be compared. */
+export interface SourceRecheck {
+  id: string;
+  /** The address that was fetched, from RIA's own record of the first fetch. */
+  url: string;
+  state: "unchanged" | "same text" | "changed" | "not checked";
+  /** The id of the page as it is now, when it differs. */
+  newId?: string;
+  /** High-severity flags the page raises now and did not before, in RIA's words (never the page's). */
+  newHighFlags?: string[];
+  /** Why the page could not be compared, or why a page with the same visible text counts as changed. */
+  reason?: string;
+}
+
+export interface Recheck {
+  schema: 1;
+  name: string;
+  checkedAt: string;
+  sources: SourceRecheck[];
+}
+
+const RECHECK_STATES = new Set<SourceRecheck["state"]>(["unchanged", "same text", "changed", "not checked"]);
+const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
+
+export function saveRecheck(root: string, recheck: Recheck): void {
+  ensureRiaDir(root);
+  fs.mkdirSync(recheckDir(root), { recursive: true });
+  fs.writeFileSync(path.join(recheckDir(root), `${recheck.name}.json`), JSON.stringify(recheck, null, 2));
+}
+
+/**
+ * The last re-check of a skill's sources, cut down to what other tools may repeat: a time, and for each source its id and
+ * state. The file is plain JSON that a chat with file tools could also write, so anything that is not exactly the shape
+ * RIA writes is dropped, and no free text from it (address, reason) is ever passed on.
+ */
+export function loadRecheck(root: string, name: string): { checkedAt: string; sources: { id: string; state: SourceRecheck["state"] }[] } | undefined {
+  if (!SKILL_NAME.test(name)) return undefined;
+  let raw: Partial<Recheck> | null;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(recheckDir(root), `${name}.json`), "utf8")) as Partial<Recheck> | null;
+  } catch {
+    return undefined;
+  }
+  if (!raw || raw.schema !== 1 || raw.name !== name || typeof raw.checkedAt !== "string" || !ISO_TIME.test(raw.checkedAt) || !Array.isArray(raw.sources)) return undefined;
+  const sources: { id: string; state: SourceRecheck["state"] }[] = [];
+  for (const s of raw.sources) {
+    if (s && typeof s === "object" && typeof s.id === "string" && SOURCE_ID.test(s.id) && RECHECK_STATES.has(s.state)) sources.push({ id: s.id, state: s.state });
+  }
+  return { checkedAt: raw.checkedAt, sources };
 }
 
 export function saveSource(root: string, record: SourceRecord): void {

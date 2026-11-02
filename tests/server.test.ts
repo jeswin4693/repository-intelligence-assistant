@@ -37,13 +37,14 @@ after(async () => {
 });
 
 describe("MCP server over stdio", () => {
-  it("advertises the tools, marking only the navigation ones read-only, with guidance for the model", async () => {
+  it("advertises the tools, marking only the navigation ones and the two skill checks read-only, with guidance for the model", async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "fetch_source", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "skill_scaffold", "start_task"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["context_for", "fetch_source", "find_path", "gate_begin", "gate_check", "gate_rollback", "impact", "plan_score", "repo_map", "skill_recheck", "skill_register", "skill_scaffold", "skill_test", "start_task"]);
     for (const t of tools) {
       assert.ok((t.description ?? "").length > 40, `${t.name} needs a real description`);
-      const navigation = ["context_for", "find_path", "impact", "plan_score", "repo_map", "start_task"].includes(t.name);
-      assert.equal(t.annotations?.readOnlyHint, navigation, t.name);
+      // skill_test and skill_register read a draft and write nothing: installing is not a tool at all
+      const readOnly = ["context_for", "find_path", "impact", "plan_score", "repo_map", "start_task", "skill_test", "skill_register"].includes(t.name);
+      assert.equal(t.annotations?.readOnlyHint, readOnly, t.name);
     }
     const rollback = tools.find((t) => t.name === "gate_rollback");
     assert.equal(rollback?.annotations?.destructiveHint, true);

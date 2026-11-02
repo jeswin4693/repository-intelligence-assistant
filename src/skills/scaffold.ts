@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ensureRiaDir } from "../repo/ria-dir";
-import { SkillError, SourceRecord, draftsDir, loadSource, sha256 } from "./store";
+import { MAX_SKILL_NAME, SKILL_NAME, SkillError, SourceRecord, draftsDir, loadSource, sha256 } from "./store";
 
 /**
  * `skill_scaffold`: turn what a chat learned from fetched pages into a draft skill folder with its provenance.
@@ -12,13 +12,11 @@ import { SkillError, SourceRecord, draftsDir, loadSource, sha256 } from "./store
  * need a person's approval (the next slice of step 5); this file never installs anything.
  */
 
-const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const MAX_NAME = 48;
-const MAX_DESCRIPTION = 500;
+export const MAX_DESCRIPTION = 500;
 const MAX_BODY = 20_000;
 const MAX_SOURCES = 10;
 /** A newline or another control character in a one-line field could add keys to the skill's front matter. */
-const NOT_ONE_LINE = /[\u0000-\u001F\u007F\u2028\u2029]/;
+export const NOT_ONE_LINE =/[\u0000-\u001F\u007F\u2028\u2029]/;
 
 export interface ScaffoldInput {
   name: string;
@@ -33,7 +31,7 @@ export interface Provenance {
   schema: 1;
   name: string;
   createdAt: string;
-  status: "draft";
+  status: "draft" | "approved";
   /** SHA-256 of SKILL.md as it was written, so a later approval can be pinned to exactly this text. */
   skillSha256: string;
   sources: {
@@ -49,8 +47,18 @@ export interface Provenance {
     /** What the check found, without the quoted text, which is untrusted. */
     flags: { kind: string; severity: string; where: string; count: number }[];
   }[];
-  /** Filled in when a person approves the skill; a draft has none. */
-  approval: null;
+  /** Filled in by `ria skill approve` when a person approves the skill; a draft has none. */
+  approval: Approval | null;
+}
+
+/** What a person approved: the exact text (by hash), where it went, and when. Written only by `approveSkill`. */
+export interface Approval {
+  approvedAt: string;
+  host: "claude" | "copilot";
+  /** Repository-relative, with forward slashes. */
+  installedTo: string;
+  /** SHA-256 of the SKILL.md the person was shown and typed the approval for; the installed file must keep matching it. */
+  skillSha256: string;
 }
 
 export interface Scaffolded {
@@ -63,8 +71,8 @@ export interface Scaffolded {
 
 function validate(input: ScaffoldInput): { name: string; description: string; body: string; ids: string[] } {
   const name = input.name.trim();
-  if (!NAME.test(name) || name.length > MAX_NAME) {
-    throw new SkillError(`A skill name is lowercase letters and digits separated by single hyphens, at most ${MAX_NAME} characters (for example "parse-ledger-exports"); "${name.slice(0, 60)}" is not.`);
+  if (!SKILL_NAME.test(name) || name.length > MAX_SKILL_NAME) {
+    throw new SkillError(`A skill name is lowercase letters and digits separated by single hyphens, at most ${MAX_SKILL_NAME} characters (for example "parse-ledger-exports"); "${name.slice(0, 60)}" is not.`);
   }
   const description = input.description.trim();
   if (!description || description.length > MAX_DESCRIPTION) throw new SkillError(`The description must be 1 to ${MAX_DESCRIPTION} characters: one sentence on what the skill does and when to use it.`);
@@ -152,8 +160,8 @@ export function skillScaffold(root: string, input: ScaffoldInput): Scaffolded {
   }
   out.push(
     "",
-    "Status: DRAFT. It is not installed and nothing loads it: it sits under .ria/, not in a skills folder. Enabling it needs the user's approval, which this version of RIA cannot give or record yet.",
-    `Next: ask the user to read ${rel}/SKILL.md.`,
+    "Status: DRAFT. It is not installed and nothing loads it: it sits under .ria/, not in a skills folder. Enabling it needs the user's approval, which only the user can give, at a terminal (ria skill approve).",
+    `Next: skill_test "${name}", then skill_register "${name}" to hand ${rel}/SKILL.md to the user.`,
   );
   return { name, dir: rel, skillSha256, text: out.join("\n") };
 }

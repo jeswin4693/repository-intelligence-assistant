@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as readline from "node:readline";
 import { parseArgs } from "node:util";
 import { evaluateGate, formatGateEval } from "./eval/gate-eval";
 import { evaluateHistory, formatHistoryEval } from "./eval/history-eval";
@@ -10,7 +11,10 @@ import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
 import { serve } from "./server";
+import { skillTest } from "./skills/check";
 import { fetchSource, formatFetch } from "./skills/fetch-source";
+import { skillRecheck } from "./skills/recheck";
+import { Review, approveSkill, formatForPerson, parseHost, reviewSkill, skillStatus } from "./skills/register";
 import { skillScaffold } from "./skills/scaffold";
 import { contextFor, formatContext } from "./tools/context";
 import { findPath, formatPath } from "./tools/find-path";
@@ -43,6 +47,13 @@ Commands:
   fetch <url>                 Fetch one public web page as plain text, flag text that tries to give orders, record it under .ria/  [--max-chars <n>]
   skill scaffold <name>       Draft a skill from fetched pages into .ria/skills/drafts/<name>/ (never installs it)
                               --description <one line> --body-file <markdown file> --source <id> (repeat; ids printed by fetch)
+  skill test <name>           Static checks on a draft (front matter, provenance against RIA's records, hidden text); runs nothing from it
+  skill register <name>       The check plus where the skill would be installed [--host claude|copilot]; installs nothing
+  skill approve <name>        A PERSON approves a draft at an interactive terminal: shows the whole SKILL.md, installs on a typed
+                              confirmation into .claude/skills (claude) or .github/skills (copilot) [--host claude|copilot]
+  skill status                Each draft: approved or not, whether the installed file is still the approved text, and the last source re-check
+  skill recheck <name>        Fetch again the pages a skill was learned from (the recorded addresses only) and say if one changed
+                              (exit code 1 when one did); shows no page text and changes no skill
   route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
   hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
@@ -77,6 +88,20 @@ function readStdin(): string {
   } catch {
     return "";
   }
+}
+
+/** Shows the person the whole skill and asks them to type the approval phrase; whatever they type is returned. */
+function askPerson(review: Review): Promise<string> {
+  process.stdout.write(`${formatForPerson(review)}\n\n`);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    // end of input (Ctrl-D) is an answer too: nothing matches, so nothing is installed
+    rl.once("close", () => resolve(""));
+    rl.question(`To install this skill for ${review.host}, type exactly:  ${review.phrase}\nAnything else cancels: `, (answer) => {
+      resolve(answer);
+      rl.close();
+    });
+  });
 }
 
 function main(): void | Promise<void> {
@@ -177,7 +202,43 @@ function main(): void | Promise<void> {
         process.stdout.write((values.json ? JSON.stringify(record, null, 2) : formatFetch(record, intOption(values["max-chars"], "max-chars"))) + "\n");
       });
     }
-    if (args[0] !== "scaffold") throw new Error("skill needs a subcommand: scaffold");
+    const sub = args[0];
+    if (sub === "status") {
+      process.stdout.write(`${skillStatus(root)}\n`);
+      return;
+    }
+    if (sub === "recheck") {
+      if (args.length !== 2) throw new Error("skill recheck needs exactly one skill name: ria skill recheck <name>");
+      return skillRecheck(root, args[1]).then((r) => {
+        process.stdout.write((values.json ? JSON.stringify(r, null, 2) : r.text) + "\n");
+        // lets a scheduled job or CI step notice that a skill's source changed
+        if (r.changed) process.exitCode = 1;
+      });
+    }
+    if (sub === "test" || sub === "register" || sub === "approve") {
+      if (args.length !== 2) throw new Error(`skill ${sub} needs exactly one draft name: ria skill ${sub} <name>`);
+      const host = parseHost(values.host);
+      if (sub === "test") {
+        const check = skillTest(root, args[1]);
+        process.stdout.write((values.json ? JSON.stringify(check, null, 2) : `${check.text}\n${check.next}`) + "\n");
+        if (check.verdict === "fail") process.exitCode = 1;
+        return;
+      }
+      if (sub === "register") {
+        const review = reviewSkill(root, args[1], host);
+        process.stdout.write((values.json ? JSON.stringify({ ...review, phrase: undefined }, null, 2) : review.text) + "\n");
+        if (!review.approvable) process.exitCode = 1;
+        return;
+      }
+      // approval is a person's: without an interactive terminal there is nobody to ask, and nothing is checked or written
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error("skill approve needs a person at an interactive terminal: run it yourself in a terminal. It cannot be run from a script, a pipe or a chat's shell, and no option replaces the question.");
+      }
+      return approveSkill(root, args[1], { host, confirm: askPerson }).then((approved) => {
+        process.stdout.write((values.json ? JSON.stringify(approved, null, 2) : approved.text) + "\n");
+      });
+    }
+    if (sub !== "scaffold") throw new Error("skill needs a subcommand: scaffold, test, register, approve, status or recheck");
     if (args.length !== 2) throw new Error("skill scaffold needs exactly one name: ria skill scaffold <name> --description ... --body-file ... --source <id>");
     if (!values.description || !values["body-file"] || !values.source?.length) throw new Error("skill scaffold needs --description, --body-file and at least one --source");
     const scaffolded = skillScaffold(root, {
