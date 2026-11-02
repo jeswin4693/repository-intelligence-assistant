@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 478 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 497 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -153,8 +153,10 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 - **`ria init`** (command line only): work out every file to write (one MCP config entry and seven role files per
   host) without touching disk -> print that as a preview -> write only with `--apply`. It does not index the
   repository, so it creates no `.ria/` folder.
-- **`gate_begin`**: detect commands -> run each -> snapshot the tree (after the runs, so side
-  effects of the checks are part of the starting state) -> save the run under `.ria/gate/<id>/`.
+- **`gate_begin`**: detect commands -> snapshot the tree (the files the commands will run on) -> take the result of
+  any command that passed in full on exactly those files in the last 30 minutes, and run the rest -> snapshot the tree
+  again if anything ran (so side effects of the checks are part of the starting state) -> save the run under
+  `.ria/gate/<id>/`.
 - **`gate_check`**: snapshot the edited tree -> list changed files -> re-run the commands ->
   compare with the baseline -> check imports and exports -> run `impact` on the changed files ->
   verdict, confidence and "may be affected".
@@ -207,6 +209,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Only new problems count against a change | A project that was already failing is not blamed for it |
 | Diagnostics are compared without line numbers | An edit that shifts lines must not make old errors look new |
 | Rollback restores only what changed since the baseline, previews first | Work that was uncommitted before `gate_begin` survives; nothing destructive happens by accident |
+| A baseline may reuse a result only when it is a full pass of the same command on a byte-identical git tree, at most 30 minutes old; a reused result keeps the time the command really ran | The baseline was the larger half of the gate's cost and the last `gate_check` had just run the same suite on the same files. A reused result can only be a pass, so a wrong reuse shows a problem as new instead of hiding one; the tree does not cover installed packages or services, hence the expiry, `reuseMinutes` and `fresh` |
 | Per-seed maximum, not a sum, when ranking `context_for` | A test that is both a dependent and "the test for" a file must not outrank the file itself |
 | Token budget binds everything except an explicitly requested target | The answer stays small, and asking for a big file by name still works (with a note) |
 | A best file or target that alone is over the budget is listed as an outline of its symbols, and only the outline is charged; a file with fewer than two symbols is charged in full | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading |
@@ -238,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 7,900 lines of source and 6,400 lines of tests. All 478 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 497 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -432,7 +435,7 @@ long gate run, and any model other than the smallest Claude one. The history num
 | `find_path` | `from`, `to` (file, suffix or symbol) | See the cheapest chain of imports between two things, with direction; falls back to co-change evidence |
 | `impact` | `files` (1-50), `depth` (1-6, default 3) | Before changing files: dependents, hidden coupling, tests, public symbols, risk score, confidence |
 | `plan_score` | `plans` (1-8, each a `name` and `files`; files not in the index count as new), `depth` (1-6, default 3) | When a task can be done several ways: rank the candidate plans by files changed, blast radius, missing tests, ignored coupling and reading cost, with the reasons, the tests to run and the confidence |
-| `gate_begin` | `label`, `commands` (names) | Before the first edit: record the tree and run the project's checks as a baseline |
+| `gate_begin` | `label`, `commands` (names), `fresh` | Before the first edit: record the tree and run the project's checks as a baseline; a check that passed in full on these same files in the last 30 minutes is not run again, unless `fresh` is true |
 | `gate_check` | `id`, `commands`, `scope` (`full` or `tied`) | After editing: re-run, compare, verdict; `tied` runs only the tests tied to the changed files when the project defines how |
 | `gate_rollback` | `id`, `apply` | Undo everything since `gate_begin` (preview unless `apply` is true) |
 | `fetch_source` | `url`, `max_chars` (1000-100000, default 20000) | When the user asks you to learn from a web page: its text as plain text inside UNTRUSTED markers, a pattern check for text that gives orders, and a source id; the address, time and SHA-256 are recorded under `.ria/` |
@@ -492,7 +495,18 @@ change what runs, add `ria.config.json` at the repository root:
 
 A string replaces or adds a command, `null` turns one off. The default timeout is 600 seconds.
 
-**Faster checks while you iterate (`scope: "tied"`).** The baseline always runs everything, but a later check can run
+**Not running a baseline twice.** A check that passed in full on exactly the files the new run starts from is not run
+again; its result is the baseline, and the report says which ones and how long ago they ran. "Exactly the files" is the
+same git tree as the snapshot takes (tracked, modified and untracked-not-ignored files, byte for byte), so any edit
+makes the check run and a commit alone does not. The result can come from an earlier baseline or from the last `gate_check`, which is
+the usual case: the next task starts on the files the previous one ended on. Only a pass is reused (a failure is run again,
+and so is a check that covered part of a suite, such as `scope: "tied"`), and only for 30 minutes, because the tree does
+not hold what lives outside it: installed packages, the toolchain, a database the tests call. `"reuseMinutes": 0` in
+`ria.config.json` turns it off (a larger number, up to 1,440, keeps results longer), and `gate_begin` with `fresh: true`
+(CLI: `gate begin --fresh`) runs everything once. Reusing a result does not repeat its time: a result reused again keeps
+the time it really ran, so the window cannot be stretched by starting runs.
+
+**Faster checks while you iterate (`scope: "tied"`).** The baseline runs everything it has no recent result for, but a later check can run
 only the tests tied to the changed files (the tests named after or importing a changed file, those that reach it through
 the import graph, and any test file that changed). For the common runners RIA works the command out itself, from the
 project's own test script, and only when that script is exactly one known runner (so the narrow command is the same
@@ -561,8 +575,8 @@ node dist/index.js gate rollback       # preview; add --apply to do it
 ```
 
 **Gate limits.** It needs git and a writable repository (not `--no-cache`). `gate_begin` and
-`gate_check` run the whole commands by default, so a slow test suite makes them slow (the baseline always does;
-`scope: "tied"` shortens later checks, see above); progress messages are sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
+`gate_check` run the whole commands by default, so a slow test suite makes them slow (a baseline skips what passed on
+the same files minutes ago; `scope: "tied"` shortens later checks, see above); progress messages are sent while they run. Output parsers cover node:test, jest, vitest, mocha, pytest, go, cargo, dotnet
 and maven for tests, and tsc, eslint, gcc/clang, rustc, msbuild, ruff, mypy and go build for
 diagnostics. Anything else falls back to exit codes and says so.
 
@@ -1022,7 +1036,6 @@ commands for start, check and rollback.
 | Resolve `tsconfig` paths, monorepo workspace packages, Python `src` layouts, wide C# namespaces | Fewer unresolved imports, better impact |
 | Content search inside `context_for` | Today it matches names only |
 | Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
-| Skip the full baseline when the tree already matches a recent green run | The baseline still re-runs everything; in the plain-versus-RIA comparison that was the larger half of the gate's cost |
 | Background gate runs with a status call | Very long suites and host timeouts |
 | A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
@@ -1087,7 +1100,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 478 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 497 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

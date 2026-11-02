@@ -221,15 +221,16 @@ export function createServer(index: RepoIndex): McpServer {
     {
       title: "Start a change gate",
       description:
-        "Call BEFORE the first edit of a task. Records the working tree and runs the project's own build, typecheck, lint and test commands to get a baseline, so gate_check can later say what your change fixed or broke. The commands come from the project's files (package.json, pyproject.toml, go.mod, Cargo.toml, .sln/.csproj, pom.xml, Makefile) or ria.config.json; you cannot supply commands. Can take minutes on a large test suite, and you must make no edits until it returns.",
+        "Call BEFORE the first edit of a task. Records the working tree and runs the project's own build, typecheck, lint and test commands to get a baseline, so gate_check can later say what your change fixed or broke. The commands come from the project's files (package.json, pyproject.toml, go.mod, Cargo.toml, .sln/.csproj, pom.xml, Makefile) or ria.config.json; you cannot supply commands. Can take minutes on a large test suite, and you must make no edits until it returns. A command that passed in full a few minutes ago on exactly the same files (the last gate_check, say) is not run again, and the report says so.",
       inputSchema: {
         label: z.string().max(100).optional().describe("Short name for this task, shown in reports."),
         commands: z.array(z.string()).max(10).optional().describe('Run only these named commands, e.g. ["typecheck", "test"]. Default: all that were found.'),
+        fresh: z.boolean().optional().describe("Run every command even if one passed a few minutes ago on the same files. Default: such a result is reused."),
       },
       annotations: runsCommands,
     },
-    async ({ label, commands }, extra) =>
-      guardedAsync(index, async () => (await gateBegin({ index, progress: progressOf(extra) }, { label, commands })).text),
+    async ({ label, commands, fresh }, extra) =>
+      guardedAsync(index, async () => (await gateBegin({ index, progress: progressOf(extra) }, { label, commands, fresh })).text),
   );
 
   server.registerTool(

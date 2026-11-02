@@ -41,6 +41,7 @@ Commands:
                               [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
   gate begin                Before editing: record the tree, run the project's checks   [--label <text>] [--commands a,b]
+                              [--fresh]   run every check, even one that passed minutes ago on these same files (otherwise it is reused)
   gate check                  After editing: compare with the baseline (exit code 1 if worse)  [--id <id>] [--commands a,b]
                               [--scope tied]   run only the tests tied to the changed files (jest, vitest, node --test and pytest are known; else gate.targeted.test in ria.config.json)
   gate rollback               Preview undoing everything since the baseline; add --apply to do it
@@ -136,6 +137,7 @@ function main(): void | Promise<void> {
       "body-file": { type: "string" },
       source: { type: "string", multiple: true },
       apply: { type: "boolean" },
+      fresh: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -322,7 +324,7 @@ function main(): void | Promise<void> {
       const names = values.commands?.split(",").map((s) => s.trim()).filter(Boolean);
       switch (args[0]) {
         case "begin":
-          return gateBegin(env, { label: values.label, commands: names }).then((r) => print(r, r.text));
+          return gateBegin(env, { label: values.label, commands: names, fresh: values.fresh }).then((r) => print(r, r.text));
         case "check": {
           if (values.scope !== undefined && values.scope !== "full" && values.scope !== "tied") fail("--scope must be full or tied");
           const scope = values.scope as "full" | "tied" | undefined;

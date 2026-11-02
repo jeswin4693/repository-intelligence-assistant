@@ -13,6 +13,11 @@ export interface GateConfig {
   commands?: Record<string, string | null>;
   timeoutSeconds?: number;
   /**
+   * How long a command that passed in full may be taken as the baseline of a later `gate_begin` without running it again,
+   * when the working tree is identical (see reuse.ts). Default 30; 0 runs everything every time.
+   */
+  reuseMinutes?: number;
+  /**
    * A narrower test command for `gate_check` with `scope: "tied"`. `{files}` is replaced with the test files tied to
    * the changed files, for example `{ "test": "node --test {files}" }`. It comes from the project, like every command.
    * Without it RIA narrows the test commands it knows how to (see `targetedSetup` in targeted.ts).

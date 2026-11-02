@@ -35,10 +35,17 @@ export interface CommandResult {
    * suite). It is shown wherever the result is, because a pass here says less than a pass of everything.
    */
   partial?: string;
+  /**
+   * Set when this run did not execute the command: it had passed in full on exactly these files a short while earlier
+   * (`run` is that run, `at` is when it really ran) and `gate_begin` took the result instead (see reuse.ts).
+   */
+  reused?: { run: string; at: string };
 }
 
 export interface CheckRecord {
   at: string;
+  /** The git tree the commands ran on, taken just before they ran. Absent in records written before results could be reused. */
+  ranOn?: string;
   changes: Change[];
   results: CommandResult[];
   verdict: string;
@@ -49,6 +56,8 @@ export interface RunState {
   label: string;
   createdAt: string;
   head: string | null;
+  /** The git tree the baseline commands ran on, taken just before they ran. Absent in records written before results could be reused. */
+  ranOn?: string;
   baseline: Snapshot;
   commands: CommandSpec[];
   baselineResults: CommandResult[];
