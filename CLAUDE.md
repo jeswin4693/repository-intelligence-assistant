@@ -11,7 +11,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 478 tests, about 1.5 min
+npm test            # 497 tests, about 1.5 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
@@ -21,6 +21,9 @@ npm run build       # needed before `node dist/index.js ...` or the MCP configs;
 - Keep RIA language- and domain-agnostic. No Business Central/AL or Made2Manage specifics, no LLM or API calls.
 - Gate commands come only from project files or `ria.config.json`. Never accept a command string from a tool argument.
 - Snapshots must stay byte-exact: do not seed from the user's git index or drop the raw git options in `src/gate/snapshot.ts`.
+- `gate_begin` may take a command's result instead of running it only when it is a full pass of the same command on a
+  byte-identical git tree inside the window (`src/gate/reuse.ts`). Never reuse a failure or a partial run, and a reused
+  result keeps the time the command really ran, so reuse cannot stretch the window.
 - The skill forge (`src/skills/`) reaches only public addresses, and nothing a tool argument, the environment or a config
   file says may loosen that: the test hook in `FetchOptions` is a code parameter only. It never installs or enables a skill
   from a tool (approval is a person's: `approveSkill` in `src/skills/register.ts` is called from `src/index.ts` only, behind

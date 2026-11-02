@@ -10,6 +10,7 @@ import { pct, plural, testsFor } from "../tools/shared";
 import { CommandDiff, Structural, Verdict, compareCommand, confidenceOf, judge } from "./compare";
 import { CommandSpec, DEFAULT_TIMEOUT_SECONDS, detectCommands, loadGateConfig } from "./detect";
 import { parseOutput } from "./parse";
+import { agoText, findReusable, reuseWindowMs } from "./reuse";
 import { runCommand } from "./runner";
 import { failuresNamed, planTargeted, targetedSetup } from "./targeted";
 import { Change, GateError, diffSnapshots, readAt, requireGit, restoreChanges, snapshotExists, takeSnapshot } from "./snapshot";
@@ -109,7 +110,7 @@ const unresolvedKeys = (graph: RepoGraph): string[] => [...new Set([...graph.unr
 
 // ---------------------------------------------------------------- begin
 
-export async function gateBegin(env: GateEnv, opts: { label?: string; commands?: string[] } = {}): Promise<{ id: string; text: string }> {
+export async function gateBegin(env: GateEnv, opts: { label?: string; commands?: string[]; fresh?: boolean } = {}): Promise<{ id: string; text: string }> {
   const { index } = env;
   const root = index.root;
   assertGate(index);
@@ -124,17 +125,26 @@ export async function gateBegin(env: GateEnv, opts: { label?: string; commands?:
   const dir = runDir(root, id);
   fs.mkdirSync(dir, { recursive: true });
 
-  const results = await runSpecs(env, specs, dir, "baseline", timeout);
+  // The files the commands are about to run on. A command that passed in full on exactly these files a short while ago
+  // is not run again (see reuse.ts); the tree is also what a later begin compares with.
+  const before = takeSnapshot(root, dir, `RIA gate baseline ${id}`, refFor(id));
+  const windowMs = opts.fresh ? 0 : reuseWindowMs(config);
+  const reusable = findReusable(root, specs, before.tree, windowMs);
+  for (const [name, r] of reusable) env.progress?.(`${name} passed ${agoText(Date.now() - Date.parse(r.at))} on these same files, not running it again`);
+
+  const ran = await runSpecs(env, specs.filter((s) => !reusable.has(s.name)), dir, "baseline", timeout);
+  const results = specs.map((s) => reusable.get(s.name)?.result ?? ran.find((r) => r.name === s.name)!);
 
   // Snapshot after the checks: whatever they touched is the state edits start from,
-  // so it is never mistaken for the editor's work.
-  const baseline = takeSnapshot(root, dir, `RIA gate baseline ${id}`, refFor(id));
+  // so it is never mistaken for the editor's work. With nothing run, nothing was touched.
+  const baseline = ran.length ? takeSnapshot(root, dir, `RIA gate baseline ${id}`, refFor(id)) : before;
   index.refresh();
   const run: RunState = {
     id,
     label: opts.label ?? "",
     createdAt: new Date().toISOString(),
     head: null,
+    ranOn: before.tree,
     baseline,
     commands: specs,
     baselineResults: results,
@@ -142,10 +152,10 @@ export async function gateBegin(env: GateEnv, opts: { label?: string; commands?:
   };
   saveRun(root, run);
   const targetedAvailable = Boolean(targetedSetup(root, config, specs.find((s) => s.name === "test")));
-  return { id, text: formatBegin(run, detected.length === 0, targetedAvailable) };
+  return { id, text: formatBegin(run, detected.length === 0, targetedAvailable, windowMs) };
 }
 
-function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: boolean): string {
+function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: boolean, windowMs: number): string {
   const out = [`Gate started: run ${run.id}${run.label ? ` (${run.label})` : ""}`, "The working tree is recorded. Make your changes now, then call gate_check."];
   if (targetedAvailable) {
     out.push('Faster checks while you iterate: gate_check with scope "tied" runs only the tests tied to the changed files. Finish with a gate_check without a scope, which runs everything.');
@@ -161,11 +171,19 @@ function formatBegin(run: RunState, noneDetected: boolean, targetedAvailable: bo
   } else {
     out.push("", "Baseline (before your change):");
     for (const r of run.baselineResults) {
-      out.push(`  ${r.name.padEnd(10)} ${word(r)}${testsText(r)}  ${fmtMs(r.durationMs)}  [${r.command}]`);
+      const took = r.reused ? `not run again, it passed ${agoText(Date.now() - Date.parse(r.reused.at))}` : fmtMs(r.durationMs);
+      out.push(`  ${r.name.padEnd(10)} ${word(r)}${testsText(r)}  ${took}  [${r.command}]`);
       if (r.status !== "pass") {
         const errors = r.diagnostics.filter((d) => d.severity === "error").length;
         out.push(`             already ${r.status === "fail" ? "failing" : "not working"}${errors ? ` with ${plural(errors, "error")}` : ""}${r.note ? `; ${r.note}` : ""}. Only new problems will count against your change.`);
       }
+    }
+    const reused = run.baselineResults.filter((r) => r.reused).length;
+    if (reused) {
+      out.push(
+        "",
+        `${reused === run.baselineResults.length ? "Nothing was run" : `${plural(reused, "command")} not run`}: ${reused === 1 ? "it" : "they"} passed in full on exactly these files within the last ${Math.round(windowMs / 60_000)} minutes, and that result is the baseline. To run everything again, call gate_begin with fresh set to true.`,
+      );
     }
   }
   const unresolved = run.baselineUnresolved.length;
@@ -249,7 +267,7 @@ export async function gateCheck(
   const { verdict, reasons } = judge(diffs, structural);
   const conf = confidenceOf(diffs, blast?.testCoverage);
 
-  run.lastCheck = { at: new Date().toISOString(), changes, results, verdict };
+  run.lastCheck = { at: new Date().toISOString(), ranOn: edited.tree, changes, results, verdict };
   saveRun(root, run);
 
   return { verdict, text: formatCheck({ root, run, changes, diffs, structural, verdict, reasons, blast, graph, changedPaths, sideEffects, conf, scopeNote }) };
