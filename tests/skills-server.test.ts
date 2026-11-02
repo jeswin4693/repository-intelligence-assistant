@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { RepoIndex } from "../src/repo/repo-index";
 import { createServer } from "../src/server";
 import { SourceRecord, saveSource, sha256 } from "../src/skills/store";import { cleanup, makeRepo } from "./helpers";
-import { draftProject, snapshotTree } from "./skills-helpers";
+import { draftProject, record, snapshotTree } from "./skills-helpers";
 
 const dirs: string[] = [];
 after(() => dirs.forEach(cleanup));
@@ -171,6 +171,42 @@ describe("the skill forge tools", () => {
     }
   });
 
+  it("re-check the pages of a skill from the recorded addresses only, show no page text, and keep the address rules", async () => {
+    // the recorded address is a local one, so the re-check is refused before anything connects
+    const local = "http://127.0.0.1/";
+    const draft = draftProject({ records: [record(ID, { url: local, finalUrl: local })] });
+    dirs.push(draft.dir);
+    const client = await connect(new RepoIndex(draft.dir, { cache: true }));
+    try {
+      const tool = (await client.listTools()).tools.find((t) => t.name === "skill_recheck")!;
+      assert.equal(tool.annotations?.openWorldHint, true, "it reaches outside the machine");
+      assert.equal(tool.annotations?.readOnlyHint, false, "it records what it fetched");
+      assert.equal(tool.annotations?.destructiveHint === true, false);
+      assert.deepEqual(Object.keys(tool.inputSchema.properties ?? {}), ["name"], "no address to fetch, no option");
+      assert.match(tool.description ?? "", /only the addresses RIA recorded when the pages were first fetched, never one you name/);
+      assert.match(tool.description ?? "", /shows no page text, changes no skill and installs nothing/);
+      assert.match(client.getInstructions() ?? "", /skill_recheck/);
+
+      const r = await client.callTool({ name: "skill_recheck", arguments: { name: draft.name } });
+      assert.ok(!isError(r), text(r));
+      assert.match(text(r), /Source re-check for skill "parse-ledger-exports" \(1 source/);
+      assert.match(text(r), /http:\/\/127\.0\.0\.1\/: not checked: .*not a public address/);
+      assert.match(text(r), /Result: no source was seen to change, but 1 could not be checked/);
+
+      // an address in the arguments is not used: the draft's own record decides what is fetched
+      const sneaky = await client.callTool({ name: "skill_recheck", arguments: { name: draft.name, url: "http://example.com/", testHooks: { allowAddress: true } } }).catch(() => undefined);
+      assert.ok(sneaky === undefined || !text(sneaky).includes("example.com"), "no argument names an address");
+      assert.ok(fs.existsSync(path.join(draft.dir, ".ria", "skills", "rechecks", "parse-ledger-exports.json")));
+      assert.ok(!fs.existsSync(path.join(draft.dir, ".claude")) && !fs.existsSync(path.join(draft.dir, ".github")), "nothing was installed");
+
+      const missing = await client.callTool({ name: "skill_recheck", arguments: { name: "no-such-draft" } });
+      assert.ok(isError(missing));
+      assert.match(text(missing), /No draft named "no-such-draft"/);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("do not give the server the installer: only the command line has it", () => {
     const server = fs.readFileSync(path.join(path.resolve(__dirname, ".."), "src", "server.ts"), "utf8");
     assert.doesNotMatch(server, /approveSkill/, "the MCP server must not import or call the installer");
@@ -188,7 +224,7 @@ describe("the skill forge tools", () => {
       const s = await client.callTool({ name: "skill_scaffold", arguments: { name: "x", description: "d", body: "b", sources: [ID] } });
       assert.ok(isError(s));
       assert.match(text(s), /cannot run with --no-cache/);
-      for (const name of ["skill_test", "skill_register"]) {
+      for (const name of ["skill_test", "skill_register", "skill_recheck"]) {
         const r = await client.callTool({ name, arguments: { name: "x" } });
         assert.ok(isError(r), name);
         assert.match(text(r), /cannot run with --no-cache/, name);
@@ -231,6 +267,20 @@ describe("the skill forge on the command line", () => {
     assert.ok(!fs.existsSync(path.join(draft.dir, ".claude")) && !fs.existsSync(path.join(draft.dir, ".github")));
   });
 
+  it("re-checks a skill's sources from the command line and lists the result in status", () => {
+    const local = "http://127.0.0.1/";
+    const draft = draftProject({ records: [record(ID, { url: local, finalUrl: local })] });
+    dirs.push(draft.dir);
+    const r = run(["skill", "recheck", draft.name], draft.dir);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /http:\/\/127\.0\.0\.1\/: not checked: .*not a public address/);
+    const s = run(["skill", "status"], draft.dir);
+    assert.match(s.stdout, /parse-ledger-exports: draft, not installed; sources re-checked on \d{4}-\d\d-\d\d, but 1 could not be checked/);
+    const none = run(["skill", "recheck"], draft.dir);
+    assert.equal(none.status, 1);
+    assert.match(none.stderr, /skill recheck needs exactly one skill name/);
+  });
+
   it("exits 1 for a draft that fails its check, and checks its arguments", () => {
     const draft = draftProject();
     dirs.push(draft.dir);
@@ -249,7 +299,7 @@ describe("the skill forge on the command line", () => {
     assert.match(badHost.stderr, /installed for claude or copilot/);
     const unknown = run(["skill", "install", draft.name], draft.dir);
     assert.equal(unknown.status, 1);
-    assert.match(unknown.stderr, /skill needs a subcommand: scaffold, test, register, approve or status/);
+    assert.match(unknown.stderr, /skill needs a subcommand: scaffold, test, register, approve, status or recheck/);
   });
 
   it("refuses to approve without an interactive terminal, even when the right phrase is piped in", () => {

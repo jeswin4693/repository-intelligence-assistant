@@ -286,10 +286,10 @@ describe("skillStatus", () => {
 
     const lines = skillStatus(p.dir).split("\n");
     assert.equal(lines[0], "Skills under .ria/skills/drafts/ (5):");
-    assert.match(lines[1], /^ {2}b-changed: approved .* for claude, \.claude\/skills\/b-changed\/SKILL\.md: CHANGED after approval: the installed file is no longer the approved text, so read it again$/);
-    assert.match(lines[2], /^ {2}c-missing: approved .*: the installed file is MISSING$/);
+    assert.match(lines[1], /^ {2}b-changed: approved .* for claude, \.claude\/skills\/b-changed\/SKILL\.md: CHANGED after approval: the installed file is no longer the approved text, so read it again; sources not re-checked yet$/);
+    assert.match(lines[2], /^ {2}c-missing: approved .*: the installed file is MISSING; sources not re-checked yet$/);
     assert.equal(lines[3], "  d-broken: UNREADABLE (provenance.json is missing or broken)");
     assert.equal(lines[4], "  e-draft: draft, not installed");
-    assert.match(lines[5], /^ {2}parse-ledger-exports: approved .*: intact: the installed file is the approved text$/);
+    assert.match(lines[5], /^ {2}parse-ledger-exports: approved .*: intact: the installed file is the approved text; sources not re-checked yet$/);
   });
 });

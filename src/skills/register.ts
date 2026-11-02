@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SkillCheck, skillTest } from "./check";
 import { Approval, Provenance } from "./scaffold";
-import { SkillError, draftPath, draftsDir, sha256 } from "./store";
+import { SkillError, draftPath, draftsDir, loadRecheck, sha256 } from "./store";
 
 /**
  * `skill_register`: handing a checked draft to a person, and installing it only on that person's approval.
@@ -198,6 +198,20 @@ export async function approveSkill(
   return { name: check.name, host, installedTo: target, skillSha256, wrote: true, text };
 }
 
+/** What the last `skill_recheck` found, as a line ending. An approved skill that was never re-checked says so; a draft says nothing. */
+function sourcesSuffix(root: string, name: string, p: Provenance): string {
+  const last = loadRecheck(root, name);
+  if (!last) return p.approval ? "; sources not re-checked yet" : "";
+  const mine = new Set((p.sources ?? []).map((s) => s.id));
+  const states = last.sources.filter((s) => mine.has(s.id)).map((s) => s.state);
+  const date = last.checkedAt.slice(0, 10);
+  const changed = states.filter((s) => s === "changed").length;
+  if (changed) return `; SOURCE CHANGED (${changed} of ${mine.size}) when re-checked on ${date}: the skill may be out of date, see skill_recheck`;
+  const unchecked = states.filter((s) => s === "not checked").length;
+  if (unchecked || states.length < mine.size) return `; sources re-checked on ${date}, but ${mine.size - states.length + unchecked} could not be checked`;
+  return `; sources unchanged as of ${date}`;
+}
+
 /** Each draft and whether it was approved, and whether the installed file is still the approved text. Read-only. */
 export function skillStatus(root: string): string {
   const dir = draftsDir(root);
@@ -211,15 +225,16 @@ export function skillStatus(root: string): string {
       continue;
     }
     const a = p.approval;
+    const sources = sourcesSuffix(root, name, p);
     if (!a) {
-      out.push(`  ${name}: draft, not installed`);
+      out.push(`  ${name}: draft, not installed${sources}`);
       continue;
     }
     const file = path.join(root, ...a.installedTo.split("/"));
     let state: string;
     if (!fs.existsSync(file)) state = "the installed file is MISSING";
     else state = sha256(fs.readFileSync(file, "utf8")) === a.skillSha256 ? "intact: the installed file is the approved text" : "CHANGED after approval: the installed file is no longer the approved text, so read it again";
-    out.push(`  ${name}: approved ${a.approvedAt.slice(0, 10)} for ${a.host}, ${a.installedTo}: ${state}`);
+    out.push(`  ${name}: approved ${a.approvedAt.slice(0, 10)} for ${a.host}, ${a.installedTo}: ${state}${sources}`);
   }
   return out.join("\n");
 }

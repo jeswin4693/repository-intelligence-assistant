@@ -13,6 +13,7 @@ import { RepoIndex } from "./repo/repo-index";
 import { serve } from "./server";
 import { skillTest } from "./skills/check";
 import { fetchSource, formatFetch } from "./skills/fetch-source";
+import { skillRecheck } from "./skills/recheck";
 import { Review, approveSkill, formatForPerson, parseHost, reviewSkill, skillStatus } from "./skills/register";
 import { skillScaffold } from "./skills/scaffold";
 import { contextFor, formatContext } from "./tools/context";
@@ -50,7 +51,9 @@ Commands:
   skill register <name>       The check plus where the skill would be installed [--host claude|copilot]; installs nothing
   skill approve <name>        A PERSON approves a draft at an interactive terminal: shows the whole SKILL.md, installs on a typed
                               confirmation into .claude/skills (claude) or .github/skills (copilot) [--host claude|copilot]
-  skill status                Each draft: approved or not, and whether the installed file is still the approved text
+  skill status                Each draft: approved or not, whether the installed file is still the approved text, and the last source re-check
+  skill recheck <name>        Fetch again the pages a skill was learned from (the recorded addresses only) and say if one changed
+                              (exit code 1 when one did); shows no page text and changes no skill
   route <request>             Which role a request calls for (writer, fixer, reader, analyser, extractor, reviewer, autopilot) and its steps
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
   hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
@@ -204,6 +207,14 @@ function main(): void | Promise<void> {
       process.stdout.write(`${skillStatus(root)}\n`);
       return;
     }
+    if (sub === "recheck") {
+      if (args.length !== 2) throw new Error("skill recheck needs exactly one skill name: ria skill recheck <name>");
+      return skillRecheck(root, args[1]).then((r) => {
+        process.stdout.write((values.json ? JSON.stringify(r, null, 2) : r.text) + "\n");
+        // lets a scheduled job or CI step notice that a skill's source changed
+        if (r.changed) process.exitCode = 1;
+      });
+    }
     if (sub === "test" || sub === "register" || sub === "approve") {
       if (args.length !== 2) throw new Error(`skill ${sub} needs exactly one draft name: ria skill ${sub} <name>`);
       const host = parseHost(values.host);
@@ -227,7 +238,7 @@ function main(): void | Promise<void> {
         process.stdout.write((values.json ? JSON.stringify(approved, null, 2) : approved.text) + "\n");
       });
     }
-    if (sub !== "scaffold") throw new Error("skill needs a subcommand: scaffold, test, register, approve or status");
+    if (sub !== "scaffold") throw new Error("skill needs a subcommand: scaffold, test, register, approve, status or recheck");
     if (args.length !== 2) throw new Error("skill scaffold needs exactly one name: ria skill scaffold <name> --description ... --body-file ... --source <id>");
     if (!values.description || !values["body-file"] || !values.source?.length) throw new Error("skill scaffold needs --description, --body-file and at least one --source");
     const scaffolded = skillScaffold(root, {

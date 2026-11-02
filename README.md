@@ -75,7 +75,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 |---|---|---|
 | Verified change loop | Baseline before an edit, comparison after, verdict, byte-exact undo | **Built** |
 | Path planning with scoring | Several candidate plans are ranked by blast radius, test coverage and ignored coupling before editing | **Built** |
-| Skill forge | Learn from web sources into reusable skills, with provenance, a static check and human approval | **Built** (step 5), except re-checking a skill's sources: `fetch_source` and `skill_scaffold` make a draft with provenance, `skill_test` checks it, `skill_register` hands it to a person, and only that person can approve and install it (`ria skill approve`, at a terminal). Commands a draft declares are not run (see Step 5) |
+| Skill forge | Learn from web sources into reusable skills, with provenance, a static check and human approval | **Built** (step 5): `fetch_source` and `skill_scaffold` make a draft with provenance, `skill_test` checks it, `skill_register` hands it to a person, and only that person can approve and install it (`ria skill approve`, at a terminal); `skill_recheck` fetches the pages again and says whether one changed. Commands a draft declares are not run (see Step 5) |
 | Roles as configuration | Reader, Analyser, Extractor, Writer, Fixer, Reviewer and Autopilot are instruction files that tell the chat which RIA tools to use in which order; `ria init` installs them for Claude Code and Copilot | **Built** |
 | The role follows the request | The wording of each request picks the role (a router with no model in it): a `start_task` tool for any chat, and a Claude Code hook that adds the role to every request | **Built**, checked in Claude Code |
 
@@ -92,8 +92,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  |  plan_score                                  |   PLANNING          |  path | impact | plan    |
  |  gate_begin  gate_check  gate_rollback       |   CHANGE GATE       |  gate ... | init         |
  |  fetch_source  skill_scaffold  skill_test    |   SKILL FORGE       |  fetch | skill scaffold  |
- |  skill_register  (nothing here installs)     |                     |  skill test|register|   |
- |                                              |                     |  approve|status (CLI)    |
+ |  skill_register  skill_recheck  (no install) |                     |  skill test|register|   |
+ |                                              |                     |  approve|status|recheck  |
  +----------------------+-----------------------+                     +--------------------------+
                         |
         +---------------+------------------------------+
@@ -109,7 +109,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
  your repository (read only)        .ria/  (index cache, gate runs, fetched sources, draft skills; ignores itself)
                                     .git/refs/ria/gate/<run id>  (snapshot commits)
 
- Planned on top: re-checking a skill's sources, VS Code extension.
+ Planned on top: VS Code extension.
 ```
 
 ### Code map
@@ -136,7 +136,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/scaffold.ts`, `store.ts` | `skill_scaffold`: a draft folder with `SKILL.md` and `provenance.json`; the record of each fetch under `.ria/skills/sources/` |
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 464 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check and approval, real MCP client over stdio |
+| | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 478 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -173,6 +174,9 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
   Nothing from the draft is run. Verdict: pass, pass with notes, or fail with the reasons.
 - **`skill_register`**: `skill_test`, then where the skill would go (`.claude/skills/<name>/` for Claude Code,
   `.github/skills/<name>/` for VS Code Copilot) and the command the user runs. It writes nothing and cannot install.
+- **`skill_recheck`**: for each source of the draft, load RIA's record of the first fetch -> fetch its address again
+  (the same address rules) -> compare bytes, then visible text, then new high-severity flags -> save the result. Shows
+  states and ids, never page text. See Step 5.
 - **`ria skill approve`** (command line only): refuse unless stdin and stdout are a terminal -> check the draft again ->
   show the person the whole `SKILL.md` and every high flag -> install only if they type `approve <name>@<first 8 digits of
   the hash>` -> write the text they were shown (not a fresh read of the draft) -> read it back -> record the approval
@@ -187,6 +191,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | `.git/refs/ria/gate/<id>` | The baseline snapshot commit, so git does not collect it | Dropped with its run |
 | `.ria/skills/sources/<id>.json` | What `fetch_source` saw: address, time, SHA-256, the page's text, flags | Delete freely; a draft that names a missing source cannot be made again |
 | `.ria/skills/drafts/<name>/` | `SKILL.md` and `provenance.json` of a draft skill; nothing loads it. After an approval, `provenance.json` also holds the approval (host, path, hash, time) | Delete the folder to discard the draft (an installed copy stays; `ria skill status` no longer sees it) |
+| `.ria/skills/rechecks/<name>.json` | The last `skill_recheck` of a skill: time, and for each source its address, state and new id | Delete freely; `ria skill status` then says "not re-checked yet" |
 | `.claude/skills/<name>/SKILL.md` or `.github/skills/<name>/SKILL.md` | An approved skill, written only by `ria skill approve`: the one place RIA writes outside `.ria/` besides `ria init` | A file in your working tree: commit it to share the skill, delete the folder to remove it |
 | `.ria/.gitignore` | Contains `*`, so `.ria/` never shows in `git status` or in a snapshot | |
 
@@ -213,6 +218,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | A skill's provenance is copied from RIA's record of the fetch, by source id, and the record carries a checksum of its own text | The chat can say which pages it learned from but cannot describe them differently; a record edited afterwards is refused |
 | Front matter is three lines RIA writes: the name must match a pattern, the description is one line and is written as a quoted string | A newline in the description could otherwise add keys such as `allowed-tools` to the skill |
 | A draft is made under `.ria/skills/drafts/` and never overwritten, and nothing loads it | Enabling a skill is a decision for a person, not a side effect of drafting one |
+| `skill_recheck` fetches the address in RIA's checksummed record of the first fetch, not one passed in or the one in `provenance.json`, and reports `not checked` (never `unchanged`) when it cannot compare | The tool then cannot be used to reach an address of a chat's choosing, and a failure to fetch is not mistaken for "nothing changed" |
+| A page with the same visible text that now raises a new high-severity flag is `changed`; the stored result is read back only as ids and states in the exact shape RIA wrote | Hidden text is how a page would turn hostile after the skill was approved; the file is plain JSON a chat could forge, so none of its free text is repeated |
 | `skill_test` is static: it reads the draft and runs nothing it declares | A command that the chat wrote and RIA runs is what the gate's rule forbids (a caller picks, never supplies), and a process sandbox on Windows is weak. A test that runs a chat's commands would be a way around "approval is a person's" |
 | The installer (`approveSkill`) is not reachable from the MCP server: it is called from the command line only, needs a `confirm` function as a required parameter, and the command line asks at an interactive terminal | No tool argument, environment variable, config file or `provenance.json` can stand in for the person; a test checks that `src/server.ts` never mentions it. The tests give their own `confirm`, a code parameter nothing outside the process can set |
 | The person types `approve <name>@<first 8 digits of the SKILL.md hash>`, and the text they were shown is the text written | A "yes" is easy to give by habit; the phrase names what is approved. Reading the draft again at write time would let a chat change it after the person read it |
@@ -231,8 +238,8 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done, except re-checking a skill's sources for change. About 7,700 lines of source and 6,100 lines of
-tests. All 464 tests pass, typecheck and build are clean.
+Steps 1 to 6 are done. About 7,900 lines of source and 6,400 lines of tests. All 478 tests pass, typecheck and build
+are clean.
 
 | Step | What | State |
 |---|---|---|
@@ -240,7 +247,7 @@ tests. All 464 tests pass, typecheck and build are clean.
 | 2 | Change gate: `gate_begin`, `gate_check`, `gate_rollback` | Done |
 | 3 | Plan scoring: `plan_score` | Done |
 | 4 | Role pack for Claude Code and Copilot Chat, installed by `ria init`, with the role chosen from each request (`start_task`, a Claude Code hook) | Done |
-| 5 | Skill forge: `fetch_source`, `skill_scaffold`, `skill_test`, `skill_register` (and `ria skill approve`) | Done, except re-checking a skill's sources for change (see Step 5) |
+| 5 | Skill forge: `fetch_source`, `skill_scaffold`, `skill_test`, `skill_register` (and `ria skill approve`) | Done (the sources re-check, `skill_recheck`, has not been tried on a live website) |
 | 6 | Eval harness: `ria eval history`, `ria eval gate` | Done |
 | 7 | VS Code extension | Optional |
 
@@ -285,6 +292,13 @@ tests. All 464 tests pass, typecheck and build are clean.
   the prompt itself in a real terminal (the tests cannot give a process a TTY, so the command line was tested only up to
   its refusal without one; the prompt is ten lines of `readline`), and a skill loaded by Claude Code or Copilot after
   install.
+- The source re-check (2026-11-02): 14 tests against a local web server whose pages change between two fetches (a
+  different text, a reissued page with the same text, a hidden element that raises a new flag over the same visible
+  text, a page that answers 404 or 500, a record that is gone), a draft whose `provenance.json` names a cloud-metadata
+  address (the record's address is the one fetched), a forged result file, the tool and the command line. One rule was
+  switched off on purpose (a new flag over the same visible text counts as a change) and its test failed. **Not tried:**
+  a live website, for the same reason as `fetch_source`; the tool and the command refuse a local address, so against a real
+  page only the rules shared with `fetch_source` were exercised.
 
 **Measured so far.** One repository (a 4,740-file TypeScript test-automation project with 1,488 commits), read-only,
 with `ria eval history`. The numbers describe that repository and nothing else.
@@ -425,6 +439,7 @@ long gate run, and any model other than the smallest Claude one. The history num
 | `skill_scaffold` | `name`, `description`, `body`, `sources` (ids from `fetch_source`) | Turn what was learned into a draft skill with provenance; never overwrites a draft, never installs or enables anything |
 | `skill_test` | `name` (a draft) | Static checks on a draft: the front matter is only RIA's three lines, `provenance.json` still matches RIA's record of each fetch, no hidden text; pass, pass with notes or fail. Runs nothing from the draft |
 | `skill_register` | `name`, `host` (`claude` or `copilot`, default `claude`) | The check, where the skill would be installed, and the command the user runs to approve it. Installs nothing and cannot: there is no argument that approves |
+| `skill_recheck` | `name` | Fetch again the pages a skill was learned from (the addresses RIA recorded, never one you pass) and say which changed since; shows no page text and changes no skill. Marked open-world |
 
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
 can be read in part. `start_task`, the navigation tools, `skill_test` and `skill_register` are marked read-only; the
@@ -866,7 +881,7 @@ config (see "Roles and `ria init`" for what it writes, what it will not overwrit
 - The Claude Code `Stop` hook that enforces the loop (`ria hook stop`) and the hook that routes each request
   (`ria hook prompt`) are built, and `ria init --hooks` installs both.
 
-### Step 5: skill forge (built, except re-checking sources)
+### Step 5: skill forge (built)
 
 **Goal.** Let the chat learn from the web into reusable skills safely.
 
@@ -919,11 +934,30 @@ on the draft) and `skill_register` (hand it to a person, who alone approves it, 
 - `ria skill status` lists each draft and whether the installed file is still the approved text; `ria skill test` and
   `ria skill register` are the same as the tools.
 
+**Built (2026-11-02): `skill_recheck` and `ria skill recheck <name>`.** An approval pins the text of the skill, not the
+pages it came from, so a tutorial that later changes would go unnoticed. The re-check fetches each source again and
+compares it with RIA's own record of the first fetch:
+
+- **Which address:** the one in that checksummed record, never one a caller names (the tool takes only the skill's name)
+  and never the one in `provenance.json`, which a chat could edit. It goes through `fetchSource`, so the public-address,
+  port, size and time rules are the same, and a record that is gone means nothing is fetched.
+- **Four states per source:** `unchanged` (the same bytes), `same text` (reissued, the visible text is the same: not a
+  change), `changed`, and `not checked` (it could not be fetched or compared: not a change, and not proof of none). A page
+  whose visible text is the same but that now raises a high-severity flag it did not raise before counts as `changed`,
+  because that is how hidden text would appear later.
+- **What it shows:** states, the new source id (the new page is recorded, so it can be read and scaffolded from), and the
+  new flags in RIA's own words. Never page text. It changes no skill, no approval and no installed file.
+- **Where it shows up:** the result is saved under `.ria/skills/rechecks/<name>.json`. `ria skill status` says "sources
+  unchanged as of ...", "SOURCE CHANGED (n of m) ..." or "not re-checked yet" for an approved skill, and `skill_test`
+  and the person's review at `ria skill approve` carry a note for a changed source. Only a time, ids and states are
+  read back from that file, and only when it has exactly the shape RIA writes: it is plain JSON a chat could forge, so no
+  free text from it reaches another tool's output.
+- **What to do when a source changed:** read the new version, scaffold a new draft from the new source id, test it and
+  have the user approve it. The old skill stays installed until the user removes it. The command line exits 1 when a
+  source changed, so a scheduled job can notice. Pages are fetched in parallel, at most 10 (the most a skill may name).
+
 **Still to build.**
 
-- **Re-checking a skill's sources.** The approval records each source's SHA-256, but nothing re-fetches the pages to see
-  whether one changed since the approval ("ask again when a source changes" in the first design). It needs `ria skill
-  recheck <name>` (the network, so not tried here) and a state in `skill status` for "a source changed: read it again".
 - **Running declared checks.** The first design had `skill_test` run checks the skill declares, in a temporary copy,
   with secrets removed from the environment. It was left out on purpose: the commands would be written by the chat and
   run by RIA, which is the thing the gate's rule forbids, and a process sandbox on Windows is weak. If checks are added,
@@ -942,8 +976,10 @@ on the draft) and `skill_register` (hand it to a person, who alone approves it, 
   tools print. Claude Code's shell has no TTY, so there the command is refused. The tool descriptions tell a chat not to,
   and the approval phrase is not in anything a tool returns, but a person who wants a hard barrier should keep the host's
   approval prompts on for terminal commands and for writes into skills folders.
-- An approved skill is pinned to the hash of its text, not to the pages: the text is what runs, but if a page it
-  was learned from changes, nothing says so yet.
+- An approved skill is pinned to the hash of its text, not to the pages: the text is what runs. `skill_recheck` says
+  when a page changed, but only when someone runs it: nothing schedules it, and a page can change between runs. It
+  compares bytes and visible text and counts only new high-severity flags: a page can change its meaning in a way
+  neither shows.
 - The fetcher does not use a proxy (`HTTPS_PROXY` is ignored) and does not trust a company's own certificate authority
   unless `NODE_EXTRA_CA_CERTS` points at it. Behind a mandatory proxy it will not reach the web. Using one would make
   the proxy, not RIA, the thing that decides which addresses are reached, so it should be a choice made in
@@ -1051,7 +1087,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 464 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 478 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

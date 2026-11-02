@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { MAX_DESCRIPTION, NOT_ONE_LINE, Provenance } from "./scaffold";
 import { sanitize } from "./sanitize";
-import { SkillError, SourceRecord, draftPath, loadSource, sha256 } from "./store";
+import { SkillError, SourceRecord, draftPath, loadRecheck, loadSource, sha256 } from "./store";
 
 /**
  * `skill_test`: static checks on a draft skill. Nothing from the draft is run.
@@ -73,7 +73,7 @@ function frontMatterProblem(skill: string, name: string): string | undefined {
   return undefined;
 }
 
-function parseProvenance(file: string, name: string): { provenance?: Provenance; problem?: string } {
+export function parseProvenance(file: string, name: string): { provenance?: Provenance; problem?: string } {
   let raw: unknown;
   try {
     raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -163,6 +163,12 @@ export function skillTest(root: string, nameInput: string): SkillCheck {
     for (const f of flags) if (f.severity === "high") highFlags.push({ id: entry.id, kind: f.kind, where: f.where, count: f.count });
   }
   if (provenance && provenance.sources.length === 0) fail("the draft names no source: a skill learned from the web must say which pages it came from");
+
+  // a page that changed after the skill was learned from it: only ids and states are taken from the stored re-check
+  const rechecked = loadRecheck(root, name);
+  for (const s of rechecked?.sources ?? []) {
+    if (s.state === "changed" && sources.some((x) => x.id === s.id)) note(`source ${s.id} had changed when it was re-checked on ${rechecked?.checkedAt.slice(0, 10)}: the skill may be out of date (skill_recheck shows how)`);
+  }
 
   const extra = fs.readdirSync(dir).filter((f) => !DRAFT_FILES.has(f));
   if (extra.length) note(`other files in the draft (${extra.length}): ${extra.slice(0, MAX_LISTED).join(", ")}${extra.length > MAX_LISTED ? ", ..." : ""}. RIA installs only SKILL.md and runs nothing`);
