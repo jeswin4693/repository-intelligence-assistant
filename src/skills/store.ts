@@ -39,9 +39,22 @@ export const sha256 = (data: string | Buffer): string => crypto.createHash("sha2
 
 const SOURCE_ID = /^[0-9a-f]{16}$/;
 
+/** A skill's name is also a folder name, so it is held to this pattern wherever it came from a tool argument. */
+export const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const MAX_SKILL_NAME = 48;
+
 export const skillsDir = (root: string): string => path.join(riaDir(root), "skills");
 export const sourcesDir = (root: string): string => path.join(skillsDir(root), "sources");
 export const draftsDir = (root: string): string => path.join(skillsDir(root), "drafts");
+
+/** The folder of an existing draft. The name must match the pattern before it can become part of a path. */
+export function draftPath(root: string, name: string): string {
+  const n = name.trim();
+  if (!SKILL_NAME.test(n) || n.length > MAX_SKILL_NAME) throw new SkillError(`"${n.slice(0, 60)}" is not a skill name: lowercase letters and digits separated by single hyphens, as printed by skill_scaffold.`);
+  const dir = path.join(draftsDir(root), n);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new SkillError(`No draft named "${n}". Make one with skill_scaffold first.`);
+  return dir;
+}
 
 /** An id that came from a tool argument must match the exact pattern before it can become part of a path. */
 export function sourcePath(root: string, id: string): string {
