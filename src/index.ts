@@ -11,6 +11,7 @@ import { parsePromptInput, promptHookOutput } from "./hooks/prompt";
 import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
 import { RepoIndex } from "./repo/repo-index";
+import { ensureRiaDir } from "./repo/ria-dir";
 import { serve } from "./server";
 import { skillTest } from "./skills/check";
 import { fetchSource, formatFetch } from "./skills/fetch-source";
@@ -19,6 +20,8 @@ import { Review, approveSkill, formatForPerson, parseHost, reviewSkill, skillSta
 import { skillScaffold } from "./skills/scaffold";
 import { contextFor, formatContext } from "./tools/context";
 import { findPath, formatPath } from "./tools/find-path";
+import { buildGraphData } from "./tools/graph-data";
+import { renderGraphHtml } from "./tools/graph-html";
 import { formatImpact, impact } from "./tools/impact";
 import { formatPlanScore, parsePlanArg, planScore } from "./tools/plan-score";
 import { repoMap } from "./tools/repo-map";
@@ -32,6 +35,9 @@ Commands:
   serve                       Start the MCP server on stdio (for VS Code / Claude Code)  [--lean]
                               --lean offers only the lookup tools (repo_map, context_for, find_path, impact) with short instructions: far fewer tokens per turn
   map                         Repository overview            [--focus <dir>] [--max-tokens <n>]
+  graph                       Write one HTML page that draws the repository: folders and files, who imports whom, each file's
+                              functions and classes, what changes together in git. Opens offline in a browser; needs no server.
+                              [--out <file>] (default .ria/graph.html) [--focus <dir>] [--no-history]
   context <file|symbol>       Files worth reading for a file   [--query <text>] [--max-files <n>] [--max-tokens <n>]
   context --query <text>      ...or for a task described in words
   path <from> <to>            Import chain between two files or symbols
@@ -131,6 +137,8 @@ function main(): void | Promise<void> {
       hooks: { type: "boolean" },
       enforce: { type: "boolean" },
       lean: { type: "boolean" },
+      out: { type: "string" },
+      "no-history": { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       "max-chars": { type: "string" },
@@ -303,6 +311,23 @@ function main(): void | Promise<void> {
     case "map": {
       const text = repoMap(index, { focus: values.focus, maxTokens });
       return print({ map: text }, text);
+    }
+    case "graph": {
+      // the page goes under .ria/ like everything RIA writes; with no cache RIA must not write there, so then the person says where
+      if (!index.persists && !values.out) fail("graph writes its page under .ria/, which --no-cache forbids: say where with --out <file>.");
+      const data = buildGraphData(index, { focus: values.focus, coChange: !values["no-history"] });
+      if ("error" in data) return fail(data.error);
+      const target = values.out ? path.resolve(values.out) : path.join(ensureRiaDir(root), "graph.html");
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, renderGraphHtml(data));
+      const s = data.stats;
+      const text = [
+        `Wrote ${target}`,
+        `${s.files} files, ${s.lines} lines, ${s.symbols} functions and classes, ${s.links} imports${data.commits ? `, ${data.co.length} pairs that change together (from ${data.commits} commits)` : ""}.`,
+        "Open it in a browser. It loads nothing from the internet and needs no server.",
+        ...data.notes,
+      ].join("\n");
+      return print({ file: target, stats: s, notes: data.notes }, text);
     }
     case "context": {
       if (args.length === 0 && !values.query) fail("context needs a file/symbol, --query, or both");

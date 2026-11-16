@@ -11,7 +11,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 531 tests, about 1.5 min
+npm test            # 546 tests, about 1.5 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
@@ -39,6 +39,11 @@ npm run build       # needed before `node dist/index.js ...` or the MCP configs;
   instructions must not name a tool a lean server does not have. A change to what a chat is handed (instructions, tool
   descriptions, a tool's output size) can cost or save tokens on every turn: measure it before keeping it (README, "Tokens: a
   plain chat against RIA"); two outline changes that looked right were dropped that way.
+- The graph page (`src/tools/graph-html.ts`) shows names that come from a repository that may not be yours. Keep the data in
+  `safeJson` (no raw `<`, `>`, `&`, line separators), put every name on screen with `textContent` (never `innerHTML`), and
+  keep the page free of any request or library: a test fails on `http`, `fetch`, `eval` and `innerHTML`. A change to how it
+  draws needs a look at a real render (Chrome or Edge headless, `--screenshot`): three bugs that a passing test did not
+  catch were found that way.
 - Bump `CACHE_SCHEMA` in `src/repo/repo-index.ts` when the content of a cached file record changes.
 - Every behaviour gets a test. For ranking or parser changes also run the tools on a real repository with `--no-cache`
   (small fixtures alone missed several real problems).
