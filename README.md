@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 497 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 501 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -212,7 +212,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | A baseline may reuse a result only when it is a full pass of the same command on a byte-identical git tree, at most 30 minutes old; a reused result keeps the time the command really ran | The baseline was the larger half of the gate's cost and the last `gate_check` had just run the same suite on the same files. A reused result can only be a pass, so a wrong reuse shows a problem as new instead of hiding one; the tree does not cover installed packages or services, hence the expiry, `reuseMinutes` and `fresh` |
 | Per-seed maximum, not a sum, when ranking `context_for` | A test that is both a dependent and "the test for" a file must not outrank the file itself |
 | Token budget binds everything except an explicitly requested target | The answer stays small, and asking for a big file by name still works (with a note) |
-| A best file or target that alone is over the budget is listed as an outline of its symbols, and only the outline is charged; a file with fewer than two symbols is charged in full | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading |
+| A file that alone is over the budget is listed as an outline of its symbols, and only the outline is charged. The best file and the target always get one; a related file gets one only if the outline fits what is left of the budget and the file limit, and is dropped otherwise. A file with fewer than two symbols has no outline: the best file or target is charged in full, a related one is dropped | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading. A related file that was too big used to vanish from the answer without a trace, though its outline costs about 300 tokens and shows where to read |
 | Run ids end in milliseconds plus random hex and are matched against an exact pattern | Runs sort in creation order, and an id from tool input can never become a path |
 | `core.longpaths=true` on every git call, short scratch file names | Deep folders (OneDrive) pass Windows' 260-character limit once git adds `.lock` files |
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
@@ -241,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 497 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 501 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -310,7 +310,7 @@ with `ria eval history`. The numbers describe that repository and nothing else.
 |---|---|---|
 | One file of a real commit is held out: did `impact` list it? (453 cases from 150 commits) | 39% | 5% for a list of the same length from the same folders, 0.3% at random |
 | ...through what | 16% git history alone, 11% import graph, 11% tied tests | |
-| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 52%, and 26% of the commit's files on average (42% and 19% before oversized files became outlines, same cases) | 0.3% at random |
+| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 69%, and 41% of the commit's files on average (52% and 26% before a related oversized file became an outline, and 42% and 19% before any oversized file did; same cases, tokens returned unchanged) | 0.3% at random |
 | How much `context_for` returned | median about 7,900 tokens (0.05% of reading the whole repository), mean about 7,800 (it was 44,600) | An oversized file counts as its outline, not as the file, so "over budget" is 0% by construction (it was a third of the answers); the chat can still read the whole file |
 | Does the `plan_score` of a change predict a fix on the same files within 10 commits better than file count does? (147 changes) | 61%, plus or minus 11 | 50%, plus or minus 11 for file count: not shown to be better |
 | The gate against 13 injected faults and fixes | 13 of 13 verdicts right, 13 of 13 rollbacks byte-exact | Cases the gate was built for, so a guard against regressions, not an independent test |
@@ -324,6 +324,12 @@ more than 25 tied tests, the held-out test was somewhere in the list in 79 of th
 (11%), and the lists where it was missed had a median of 155 tests. Ordering the list by co-change history, by
 closeness of path, or both moved the first-25 figure from 51 to at most 54, so nothing in the graph or the history
 separates those tests and the ordering was not kept.
+
+A related file that was too big for the `context_for` budget used to be dropped without a trace. Showing it as an outline
+(2026-11-16, same repository, `ria eval history --no-cache` run on the code before and after) took the same 48 cases from
+52% to 69% (at least one changed file among the 12 returned) and from 26% to 41% of the commit's files, with the tokens
+returned unchanged (median 7,867 to 7,870) and `impact` and `plan_score` identical, as they should be. Read it as direction,
+not proof: one repository, 48 cases, and 17 points is about 8 more cases.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
 [.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
@@ -830,7 +836,9 @@ default root.
   and token budget; symbols that matched the query are listed first. The best file (or the requested target) is
   always returned; when it alone is over the budget and has at least two symbols, it is returned as an outline
   (up to 40 symbols in file order with line numbers, the query's matches always among them, the rest spread over
-  the file) and only the outline counts against the budget.
+  the file) and only the outline counts against the budget. A related file that alone is over the budget gets an outline
+  the same way when that outline fits what is left of the budget and of `max_files`; otherwise it is omitted, as before,
+  and the answer says it was cut. Related files shown as outlines share one note.
 - `impact` follows importers up to `depth` hops, adds co-change partners that do not import the file, ties tests
   by name or import, and scores risk transparently: 1 point per non-test dependent (max 20) + 2 per strong
   hidden coupling + 4 if no test is tied. Under 5 is low, under 12 medium, otherwise high.
@@ -1044,7 +1052,6 @@ commands for start, check and rollback.
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
 | Faster warm refresh (file watcher or `git status` fast path) | About 1 s per call at 4,700 files on OneDrive |
-| `context_for`: outline a related file (not only the best one or the target) that alone is over the budget | Today such a file is dropped; an outline would cost about 300 tokens and show where to read |
 | `impact`: show more of the tied tests | Showing all of them found 17% of held-out files instead of 11%, but the lists that matter have a median of 155 tests; ranking them did not help (see "Measured so far"), so this is a question of output size |
 | Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits |
 
@@ -1058,8 +1065,10 @@ commands for start, check and rollback.
 - Not resolved yet: `tsconfig` path aliases other than `@/`, `~/`, `#/`, monorepo workspace packages, and C#
   namespaces shared by more than 25 files (no edge is added for those).
 - `context_for` queries match file paths and symbol names, not file contents. Pair it with a content search
-  when the task is about specific text. A highly relevant file that does not fit the token budget is dropped,
-  unless it is the best match or the requested target, which come back as an outline. An outline's cost is what
+  when the task is about specific text. A related file that fits the budget is listed whole; one that alone is over
+  the budget is listed as an outline if the outline fits what is left; a file that is under the budget alone but does not
+  fit what is left is dropped (the answer says it was cut). The best match and the requested target always come back,
+  as an outline when they alone are over the budget. An outline's cost is what
   counts against the budget, not the file's: the chat is told to read only the part it needs, but RIA cannot make
   it, and a file with a single huge symbol has no outline and is charged in full.
 - Coupling is blind to history before a rename, and needs git.
@@ -1100,7 +1109,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 497 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 501 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
