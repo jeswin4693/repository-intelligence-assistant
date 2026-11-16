@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 501 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 504 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -241,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 501 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 504 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -456,8 +456,9 @@ long gate run, and any model other than the smallest Claude one. The history num
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
 can be read in part. `start_task`, the navigation tools, `skill_test` and `skill_register` are marked read-only; the
 gate tools and the other forge tools are not, `gate_rollback` is marked destructive, and `fetch_source` is marked
-open-world because it reaches outside the machine. The roles do not use the forge tools yet: the server's instructions
-tell any chat when to use them. Approving and installing a skill is not a tool: it is `ria skill approve <name>`, a
+open-world because it reaches outside the machine. The Writer and the Autopilot (where a request to learn from a page is
+routed) carry the forge tools and one step for them; the read-only roles do not, and the server's instructions tell any
+chat when to use them. Approving and installing a skill is not a tool: it is `ria skill approve <name>`, a
 command a person runs at a terminal (see Step 5).
 
 ---
@@ -640,11 +641,11 @@ node dist/index.js init --host both --root C:/path/to/your/repo --apply         
 
 | Role | Use it to | Edits | RIA tools |
 |---|---|---|---|
-| Autopilot | do a whole task start to finish, or several kinds of work at once, or when the request is unclear; asks only when a decision is needed | yes | everything, including the gate |
+| Autopilot | do a whole task start to finish, or several kinds of work at once, or when the request is unclear; asks only when a decision is needed | yes | everything, including the gate and the skill tools |
 | Reader | understand or explain code, find where something lives, see who uses it | no | the navigation tools |
 | Analyser | judge size and risk before a change, compare approaches | no | the navigation tools and `plan_score` |
 | Extractor | move, split or rename code without changing behaviour | yes | everything, including the gate |
-| Writer | create something new (a file, a folder, a feature, a test) or change how something works on purpose | yes | everything, including the gate |
+| Writer | create something new (a file, a folder, a feature, a test) or change how something works on purpose | yes | everything, including the gate and the skill tools |
 | Fixer | fix a bug or a failing check, and prove it | yes | the navigation tools and the gate |
 | Reviewer | review someone else's change | no | the navigation tools |
 
@@ -936,7 +937,9 @@ on the draft) and `skill_register` (hand it to a person, who alone approves it, 
   draft under `.ria/skills/drafts/<name>/`: never overwritten, not installed, not loaded by anything. `provenance.json`
   carries a hash of `SKILL.md` and an empty `approval`, for the next half to fill.
 - Also from the command line: `ria fetch <url>` and `ria skill scaffold <name> --description ... --body-file ... --source <id>`.
-  The server's instructions tell any chat when to use the two tools; the seven roles do not mention them yet.
+  The server's instructions tell any chat when to use them, and (2026-11-16) the Writer and the Autopilot carry the forge
+  tools and a step for them: fetch each page the user named, treat it as data, scaffold, test, register, and leave the
+  approval to the user.
 
 **Built (2026-11-02): `skill_test`, `skill_register` and `ria skill approve`.**
 
@@ -987,7 +990,6 @@ compares it with RIA's own record of the first fetch:
   with secrets removed from the environment. It was left out on purpose: the commands would be written by the chat and
   run by RIA, which is the thing the gate's rule forbids, and a process sandbox on Windows is weak. If checks are added,
   they should come from a person (in `ria.config.json`), not from the draft.
-- **The roles** do not mention the forge tools; the server's instructions do.
 
 **Honest limits.**
 
@@ -1112,7 +1114,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 501 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 504 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

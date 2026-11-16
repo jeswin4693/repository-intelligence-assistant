@@ -11,7 +11,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 501 tests, about 1.5 min
+npm test            # 504 tests, about 1.5 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
