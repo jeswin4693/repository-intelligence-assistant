@@ -329,7 +329,10 @@ A related file that was too big for the `context_for` budget used to be dropped 
 (2026-11-16, same repository, `ria eval history --no-cache` run on the code before and after) took the same 48 cases from
 52% to 69% (at least one changed file among the 12 returned) and from 26% to 41% of the commit's files, with the tokens
 returned unchanged (median 7,867 to 7,870) and `impact` and `plan_score` identical, as they should be. Read it as direction,
-not proof: one repository, 48 cases, and 17 points is about 8 more cases.
+not proof: one repository, 48 cases, and 17 points is about 8 more cases. A second step was tried the same way and not
+kept: also showing as an outline a related file that fits the budget alone but not what is left after the better-ranked
+files. It moved the same cases from 69% to 71% (one case in 48) and from 41% to 42%, with the tokens returned about the
+same (mean 7,810 to 7,719), which is not shown to help, so such a file is still dropped and the answer says it was cut.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
 [.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
