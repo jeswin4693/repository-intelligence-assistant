@@ -1166,9 +1166,10 @@ built and checked on. It has run on GitHub twice, both green (the pull request a
 Before that, its steps were run in a fresh clone of the committed code with no git identity configured, as on a runner:
 all passed, in about 2 minutes. Linux and macOS have not been tried (WSL is not installed here and Docker is in
 Windows-container mode), so they are not part of the job that counts. A second job, `other-platforms`, runs the same
-steps on `ubuntu-latest` and `macos-latest` and is allowed to fail (`continue-on-error`), so the first push after this
-tells you whether the suite works there without ever blocking a pull request. It has not run yet; when it is green on
-both, fold them into the `check` job as a matrix and delete it.
+steps on `ubuntu-latest` and `macos-latest` and is allowed to fail (`continue-on-error`), so it tells you whether the suite
+works there without ever blocking a pull request. The workflow runs only for a pull request and for a push to `main`, not
+for a push to another branch, so the first pull request (or merge into `main`) after this is what starts it. It has not
+run yet; when it is green on both, fold them into the `check` job as a matrix and delete it.
 
 **Add a language.** A row in `extract.ts` (symbol rules, import rule), an entry in `languages.ts`, a
 resolver case in `resolve.ts`, and tests in `tests/extract.test.ts` and `tests/graph.test.ts`.
