@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 519 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 531 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -241,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 519 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 531 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -341,6 +341,60 @@ is not shown to beat the folder guess. `context_for` returned a changed file in 
 files, against 14% for 12 random files (12 files are 14% of this repository). The `plan_score` check was skipped, because
 it needs 10 changes followed by a fix and there were none. None of this says anything about large repositories, which is
 where the tools are meant to help; it leaves the open item as it was: one large repository has been measured.
+
+### Tokens: a plain chat against RIA (2026-11-16)
+
+**Question.** Does RIA make a chat use fewer tokens than the same chat without it? The earlier comparison (a 56-file repository,
+the whole role-and-gate setup, editing jobs) found RIA about 50% dearer. This one measures only what RIA was built to save:
+finding the files for a task, on a big repository and on a small one.
+
+**Method.** Real past commits are the tasks and the files each commit changed are the answer key: "A developer has been asked
+to do <the commit subject>. Which files would they change? Reply with only the paths." Claude Code 2.1.323 headless
+(`claude -p`) on the smallest model, each run in a throwaway copy of the repository, with the same built-in tools in every
+condition (`Read`, `Grep`, `Glob`, nothing that runs commands) and only the RIA server added in the RIA conditions: no hooks and
+no roles. The tokens are the ones Claude Code reports for each run (input, cache write, cache read and output), summed over
+all turns, so a long conversation counts its context again on every turn, as it is billed. Three repetitions of every task.
+
+| | Plain | RIA, whole server | RIA, `--lean` |
+|---|---|---|---|
+| **Big repository** (4,747 files, 6 tasks, 18 runs each) | | | |
+| Tokens processed per run | 107,772 | 75,857 (-30%) | **53,701 (-50%)** |
+| Estimated cost per run | $0.0062 | $0.0041 | $0.0028 |
+| Turns / seconds | 8.6 / 23 | 7.2 / 15 | 5.7 / 12 |
+| Answer-key files found | 95% | 87% | **98%** |
+| **Small repository** (RIA itself, 84 files, 5 tasks, 15 runs each) | | | |
+| Tokens processed per run | 59,597 | not run | **34,461 (-42%)** |
+| Estimated cost per run | $0.0044 | not run | $0.0017 |
+| Turns / seconds | 6.1 / 17 | not run | 4.7 / 9 |
+| Answer-key files found | 98% | not run | 90% |
+
+Paired by task and repetition, lean used fewer tokens in 16 of 18 runs on the big repository (on average 54,000 fewer, give
+or take 24,000 at 95%) and in 14 of 15 on the small one (25,000 fewer, give or take 11,000). The whole server used fewer in
+only 11 of 18, and the chat called `start_task` (a playbook of about 1,150 tokens) in 17 of its 18 runs.
+
+**Where the saving comes from.** Fewer turns, and far less text read. A plain chat searches, opens a file, searches again;
+with RIA it asks once for a ranked list, reads one or two files and answers. In the big repository the plain runs read about
+5,900 tokens of search results and files, the lean runs about 1,100 plus 2,300 of RIA's answers.
+
+**What it costs, and where it is weaker.**
+- **Accuracy.** On the small repository lean found 90% of the answer-key files against 98%, and the misses were mostly test
+  files it did not list. On the big repository it found 98% against 95%, but `context_for` matches names and not contents, so a
+  file whose name does not look like the task (one page-object file in task 2, for example) is the kind it misses.
+- **Smaller than 84 files is not measured.** A project that has just been started has little to read, so there is less for any
+  tool to save; the trend (-50% at 4,700 files, -42% at 84) does not show where it stops.
+- **Only one kind of task.** Read-only "which files" questions, with a prompt that asks for a bare list of paths. Nothing was
+  edited and no gate, hook or role was used, so this says nothing about editing jobs, where the earlier comparison found the
+  whole setup dearer.
+- **Small samples.** 6 and 5 tasks, 3 runs each, the smallest model, two repositories. The answer key is what one commit
+  changed, and a developer can be right with other files. The scripts that drove it are not in this repository: they call a
+  model, which RIA deliberately does not contain.
+
+**Tried and not kept.** Showing a big single-class file's methods in its outline, which in this repository's page objects had
+been one line with the class name (a file of 17,000 lines shown as "about 7 tokens"). Outlines of up to 40 entries for related
+files used 49,155 tokens and found 89% of the files; outlines of 12 entries used 47,193 and found 88%; the original, one-line
+outline used 53,701 and found 98%. The richer outlines saved a few percent and cost about ten points of accuracy (the chat
+explored less when it was given more up front, and the bigger outlines pushed other files out of the 8,000-token budget), so
+the original behaviour stays.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
 [.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
@@ -630,6 +684,20 @@ claude mcp add ria -- node C:/path/to/repository-intelligence-assistant/dist/ind
 This repository ships both configs ([.vscode/mcp.json](.vscode/mcp.json), [.mcp.json](.mcp.json))
 so RIA can analyse itself once built.
 
+**Lean mode (the way to use RIA when you want fewer tokens).** Everything a chat is handed is read again on every turn:
+the server's instructions and every tool's description. The whole server hands over about 4,070 tokens (14 tools and 580 of
+instructions). `ria serve --lean` offers only the four lookup tools (`repo_map`, `context_for`, `find_path`, `impact`) with
+four lines of instructions: about 975 tokens. It has no gate, no role router and no skill forge, so it also installs no
+roles and no hooks (they tell the chat to call those tools). On the measured tasks (see "Tokens: a plain chat against RIA")
+it used about half the tokens of a chat without RIA.
+
+```powershell
+node dist/index.js init --host claude --lean --root C:/path/to/your/repo --apply   # writes only the .mcp.json entry (--host copilot or both too)
+claude mcp add ria -- node C:/path/to/repository-intelligence-assistant/dist/index.js serve --root . --lean   # or by hand
+```
+In VS Code's `.vscode/mcp.json` add `"--lean"` to the end of `args`. `--lean` cannot be combined with `--hooks`, `--enforce` or
+`--roles`. To go back to the whole tool set, run `init` again without `--lean` and with `--force`.
+
 **Roles, and how the right one is chosen.** The tools work on their own, but a chat does not know which one to use
 when. `ria init` installs the MCP config plus seven roles: instruction files that say which RIA tools to call in
 which order, when to stop, and what to report. Six are specialists; the seventh, the **Autopilot**, runs a whole
@@ -646,6 +714,7 @@ node dist/index.js init --host both --root C:/path/to/your/repo --apply         
 | `--host claude` | the `ria` entry in `.mcp.json`, and `.claude/skills/ria-<role>/SKILL.md` |
 | `--host claude --hooks` | also `.claude/settings.local.json` with two hooks: the one that picks the role for each request, and the one that holds the chat to the gate (both described below). The file is personal: keep it out of git |
 | `--host claude --hooks --enforce` | also a third hook, `PreToolUse`, that refuses an edit of a project file until `gate_begin` has run (opt-in; described below) |
+| `--lean` (any host) | only the `ria` server entry, started with `--lean`: four lookup tools and short instructions, for fewer tokens (see "Lean mode" under "Use it"). No role files and no hooks, and it cannot be combined with `--hooks`, `--enforce` or `--roles` |
 | `--host copilot` | the `ria` entry in `.vscode/mcp.json`, and `.github/agents/ria-<role>.agent.md` |
 
 | Role | Use it to | Edits | RIA tools |
@@ -1155,7 +1224,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 519 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 531 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
