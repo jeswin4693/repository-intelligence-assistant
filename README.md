@@ -129,7 +129,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
 | | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files (the narrow commands RIA knows for jest, vitest, node --test and pytest), and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
-| Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
+| Hooks | `src/hooks/prompt.ts`, `stop.ts`, `pretool.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse. `ria hook pretool` (opt-in): the `PreToolUse` hook that refuses an edit of a project file until `gate_begin` has run |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
 | Skill forge | `src/skills/fetch-source.ts` | `fetch_source`: one public web page, with the address rules, limits and the report the chat sees |
 | | `src/skills/sanitize.ts` | A page to plain text (a hand-written one-pass HTML reader), and the pattern check for text that tries to give the chat orders |
@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 504 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 519 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -241,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 504 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 519 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -333,6 +333,14 @@ not proof: one repository, 48 cases, and 17 points is about 8 more cases. A seco
 kept: also showing as an outline a related file that fits the budget alone but not what is left after the better-ranked
 files. It moved the same cases from 69% to 71% (one case in 48) and from 41% to 42%, with the tokens returned about the
 same (mean 7,810 to 7,719), which is not shown to help, so such a file is still dropped and the answer says it was cut.
+
+A second repository (2026-11-16): the only other one on this machine is RIA itself, with 24 commits and 83 files, so only
+16 commits were usable and the run calls its own rates an anecdote. `impact` showed the held-out file in 75% of 60
+questions against 72% for a list of the same length from the same folders (21% at random), so on a project this small it
+is not shown to beat the folder guess. `context_for` returned a changed file in 81% of 16 cases and 20% of the commit's
+files, against 14% for 12 random files (12 files are 14% of this repository). The `plan_score` check was skipped, because
+it needs 10 changes followed by a fix and there were none. None of this says anything about large repositories, which is
+where the tools are meant to help; it leaves the open item as it was: one large repository has been measured.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
 [.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
@@ -637,6 +645,7 @@ node dist/index.js init --host both --root C:/path/to/your/repo --apply         
 |---|---|
 | `--host claude` | the `ria` entry in `.mcp.json`, and `.claude/skills/ria-<role>/SKILL.md` |
 | `--host claude --hooks` | also `.claude/settings.local.json` with two hooks: the one that picks the role for each request, and the one that holds the chat to the gate (both described below). The file is personal: keep it out of git |
+| `--host claude --hooks --enforce` | also a third hook, `PreToolUse`, that refuses an edit of a project file until `gate_begin` has run (opt-in; described below) |
 | `--host copilot` | the `ria` entry in `.vscode/mcp.json`, and `.github/agents/ria-<role>.agent.md` |
 
 | Role | Use it to | Edits | RIA tools |
@@ -720,8 +729,9 @@ What is enforced and what is not:
   GitHub's custom agent reference, so if your VS Code version ignores it, replace the names with `ria/*`.
 - **Claude Code** skills are instructions too, and RIA writes no permission rules: tool approval stays in
   your own settings. The routing hook is advice: it tells the chat which role the request needs, and the chat can
-  still skip that role's steps. What Claude Code hooks can enforce is the end of the loop: see "Make Claude Code
-  finish only when the gate agrees" below.
+  still skip that role's steps. What Claude Code hooks can enforce is the end of the loop (see "Make Claude Code
+  finish only when the gate agrees" below) and, if you opt in with `--enforce`, the start of it (see "Make Claude Code
+  start with a baseline" below).
 
 **Make Claude Code finish only when the gate agrees.** `ria hook stop` is a Claude Code `Stop` hook. When the chat is
 about to finish and the latest gate run (the one it started with `gate_begin`) says its change made things worse
@@ -765,6 +775,37 @@ existing file, keeps your own hooks, and does nothing if RIA's hooks are already
   non-blocking error, so a broken hook cannot trap the chat.
 - Like `gate_check`, it runs the project's own commands. It does not make the chat call `gate_begin`: without a
   baseline there is nothing to compare with, so a chat that edits without a baseline is not held to anything.
+
+**Make Claude Code start with a baseline (opt-in).** `ria hook pretool` is a Claude Code `PreToolUse` hook for Edit,
+Write, MultiEdit and NotebookEdit. The routing hook only advises, a chat can skip the gate (in the real-host runs a chat
+on the smallest model sometimes did), and the stop hook can only hold a chat to a baseline it started. This hook refuses
+an edit of a file in the repository until a gate run exists, and hands the chat the reason: call `gate_begin`, then
+repeat the edit. It is not part of `--hooks` alone, because it makes even a one-line edit start with a baseline:
+
+```powershell
+node dist/index.js init --host claude --hooks --enforce --root C:/path/to/your/repo --apply
+```
+
+- **What it holds back.** An edit of a file inside the repository, when there is no gate run or the latest one is older
+  than 12 hours (`--max-age-hours`; probably another task's). Not held back: files outside the repository (a scratch or
+  memory file), anything under `.ria`, `.claude` and `.git`, every other tool (so `gate_begin` itself is never blocked),
+  and a folder that is not a git repository (the gate needs git, so nothing could be asked for).
+- **How it refuses.** It prints `permissionDecision: "deny"` with the reason as JSON on stdout and exits 0. To let an edit
+  through it prints nothing and never an explicit `allow`, which would skip your own permission prompts. A hook that
+  cannot read its input lets the edit through, and one that breaks exits 1, which Claude Code treats as a non-blocking
+  error. It reads only `.ria/gate` and writes nothing.
+- **What it costs.** The baseline the chat is asked for is a full test run when files changed since the last passing run
+  (a passing run on identical files from the last 30 minutes is reused, so it takes seconds then).
+- **What it does not do.** It checks that a baseline exists, not that it belongs to this task: a run from earlier the same
+  day lets edits through. It covers the four edit tools, not a change made through the shell (`sed -i`, a redirect), which
+  the chat can still do. And a chat that cannot call `gate_begin` (the RIA server is not loaded) cannot edit until the
+  server is loaded or the `PreToolUse` entry is deleted from `.claude/settings.local.json`.
+- **Checked in Claude Code 2.1.323 (2026-11-16)**, headless (`claude -p`, the smallest model, the RIA server, a
+  throwaway project set up with `ria init --enforce --apply`), reading the event stream. The first `Write` was refused and
+  the chat was shown the reason as "PreToolUse:Write hook error: Do not edit `notes.txt` yet: no change-gate baseline...";
+  it then loaded `gate_begin` with ToolSearch as the reason said, called it, repeated the `Write`, which went through, and
+  finished with `gate_check` (unchanged). One run, one small model: it shows that the protocol works and that a chat can
+  follow the reason, not how often it will.
 
 **The Autopilot.** Hand it a task and it works out what kind of task it is (a question, a change or a review),
 finds the files, checks the impact, compares approaches with `plan_score` when there is more than one, records a
@@ -1050,7 +1091,6 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
 | Background gate runs with a status call | Very long suites and host timeouts |
-| A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
 | Router: more languages than English, and learning from the roles you correct | It reads English only; each real misreading so far was a missing general rule |
 | PR review mode (`ria review <range>`) | Impact and optional gate on a diff, as a markdown comment |
@@ -1058,7 +1098,7 @@ commands for start, check and rollback.
 | Several roots and per-package commands | Monorepos |
 | Faster warm refresh (file watcher or `git status` fast path) | About 1 s per call at 4,700 files on OneDrive |
 | `impact`: show more of the tied tests | Showing all of them found 17% of held-out files instead of 11%, but the lists that matter have a median of 155 tests; ranking them did not help (see "Measured so far"), so this is a question of output size |
-| Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits |
+| Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits. The only other repository on this machine (this one, 83 files) is too small to say anything (see "Measured so far") |
 
 ---
 
@@ -1086,7 +1126,8 @@ commands for start, check and rollback.
   cost counts whole files even though a large file can be read in part. Weights are judgement, not fitted;
   step 6 is where they get checked against gate outcomes.
 - The roles are instructions. They tell a chat how to use RIA; they cannot make it. Only the Copilot tool allow-list
-  is enforced (see "Roles and `ria init`"). The generated files follow the host documentation as fetched on
+  is enforced (see "Roles and `ria init`"), and in Claude Code the opt-in `--enforce` hook, which refuses an edit made
+  with an edit tool before `gate_begin` has run (not one made through the shell). The generated files follow the host documentation as fetched on
   2026-10-23, and both hosts have renamed these features before, so re-check the format after a major VS Code or
   Claude Code update. Built-in Copilot tool names (`read`, `search`, `edit`, `execute`) are ignored by a VS Code
   version that does not know them.
@@ -1114,7 +1155,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 504 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 519 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```

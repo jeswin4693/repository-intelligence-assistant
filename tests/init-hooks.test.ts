@@ -22,6 +22,7 @@ const plan = (dir: string, opts: Partial<Parameters<typeof planInit>[1]> = {}): 
 };
 const hooksAction = (p: InitPlan) => p.actions.find((a) => a.path === HOOKS_FILE);
 const read = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, HOOKS_FILE), "utf8"));
+const contentOf = (p: InitPlan) => JSON.parse(hooksAction(p)!.content!);
 
 const mine = { type: "command", command: "echo mine" };
 const handler = (verb: string, timeout: number, entry = ENTRY) => ({ type: "command", command: "node", args: [entry, "hook", verb], timeout });
@@ -146,5 +147,72 @@ describe("ria init --hooks", () => {
     const applied = run("--apply");
     assert.equal(applied.status, 0, applied.stderr);
     assert.deepEqual(read(dir).hooks.UserPromptSubmit[0].hooks[0].args, ["hook", "prompt"]);
+  });
+});
+
+describe("ria init --hooks --enforce", () => {
+  const MATCHER = "Edit|Write|MultiEdit|NotebookEdit";
+  const pretoolGroup = { matcher: MATCHER, hooks: [handler("pretool", 10)] };
+
+  it("is off unless asked for, and needs --hooks", () => {
+    const dir = repo();
+    assert.equal(contentOf(plan(dir)).hooks.PreToolUse, undefined);
+    const p = planInit(dir, { host: "claude", roles: ["reader"], entry: ENTRY, enforce: true });
+    assert.ok("error" in p && /--enforce needs --hooks/.test(p.error), "refused without --hooks");
+  });
+
+  it("adds a PreToolUse hook for the tools that edit, next to the other two, and says what it does and how to turn it off", () => {
+    const dir = repo();
+    const p = plan(dir, { enforce: true });
+    const a = hooksAction(p)!;
+    assert.match(a.detail, /registers the routing hook, the gate hook and the hook that refuses an edit before gate_begin/);
+    assert.deepEqual(JSON.parse(a.content!), {
+      hooks: {
+        UserPromptSubmit: [{ hooks: [handler("prompt", 10)] }],
+        Stop: [{ hooks: [handler("stop", 1200)] }],
+        PreToolUse: [pretoolGroup],
+      },
+    });
+    const notes = p.notes.join("\n");
+    assert.match(notes, /--enforce: Claude Code will refuse every Edit, Write, MultiEdit and NotebookEdit/);
+    assert.match(notes, /Files outside the repository and under \.ria, \.claude and \.git are not held back/);
+    assert.match(notes, /delete the PreToolUse entry from \.claude\/settings\.local\.json/);
+    assert.deepEqual(plan(dir).notes.filter((n) => /--enforce/.test(n)), [], "no note about it when it is off");
+
+    applyInit(dir, p);
+    assert.deepEqual(read(dir).hooks.PreToolUse[0].hooks[0].args, [ENTRY, "hook", "pretool"]);
+    assert.equal(hooksAction(plan(dir, { enforce: true }))!.kind, "unchanged", "the second time changes nothing");
+  });
+
+  it("adds it later to a file that already has the two hooks, keeping a PreToolUse hook of the person's own", () => {
+    const dir = repo();
+    applyInit(dir, plan(dir));
+    const settings = read(dir);
+    const theirs = { matcher: "Bash", hooks: [mine] };
+    fs.writeFileSync(path.join(dir, HOOKS_FILE), JSON.stringify({ ...settings, hooks: { ...settings.hooks, PreToolUse: [theirs] }, permissions: { allow: ["Read"] } }));
+
+    const a = hooksAction(plan(dir, { enforce: true }))!;
+    assert.equal(a.kind, "update");
+    const next = JSON.parse(a.content!);
+    assert.deepEqual(next.hooks.PreToolUse, [theirs, pretoolGroup], "theirs first, RIA's appended with its matcher");
+    assert.deepEqual(next.hooks.Stop, settings.hooks.Stop, "the other RIA hooks are as they were");
+    assert.deepEqual(next.permissions, { allow: ["Read"] }, "every other setting is kept");
+  });
+
+  it("works from the command line: preview first, written with --apply", () => {
+    const dir = repo();
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const cli = path.join(path.resolve(__dirname, ".."), "src", "index.ts");
+    const run = (...args: string[]) => spawnSync(process.execPath, ["--import", "tsx", cli, "init", "--host", "claude", "--roles", "reader", "--on-path", "--root", dir, ...args], { env, encoding: "utf8" });
+    const refused = run("--enforce");
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr + refused.stdout, /--enforce needs --hooks/);
+    const dry = run("--hooks", "--enforce");
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.equal(fs.existsSync(path.join(dir, HOOKS_FILE)), false, "no --apply, nothing written");
+    const applied = run("--hooks", "--enforce", "--apply");
+    assert.equal(applied.status, 0, applied.stderr);
+    assert.deepEqual(read(dir).hooks.PreToolUse, [{ matcher: MATCHER, hooks: [{ type: "command", command: "ria", args: ["hook", "pretool"], timeout: 10 }] }]);
   });
 });
