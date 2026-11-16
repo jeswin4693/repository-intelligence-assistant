@@ -131,13 +131,14 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
 | Hooks | `src/hooks/prompt.ts`, `stop.ts`, `pretool.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse. `ria hook pretool` (opt-in): the `PreToolUse` hook that refuses an edit of a project file until `gate_begin` has run |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
+| Graph | `src/tools/graph-data.ts`, `graph-html.ts` | `ria graph`: the data (files, imports as indexes, each file's symbols, what changes together) and the one-file HTML page that draws it on a canvas; command line only |
 | Skill forge | `src/skills/fetch-source.ts` | `fetch_source`: one public web page, with the address rules, limits and the report the chat sees |
 | | `src/skills/sanitize.ts` | A page to plain text (a hand-written one-pass HTML reader), and the pattern check for text that tries to give the chat orders |
 | | `src/skills/scaffold.ts`, `store.ts` | `skill_scaffold`: a draft folder with `SKILL.md` and `provenance.json`; the record of each fetch under `.ria/skills/sources/` |
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 531 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 546 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -195,6 +196,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | `.ria/skills/drafts/<name>/` | `SKILL.md` and `provenance.json` of a draft skill; nothing loads it. After an approval, `provenance.json` also holds the approval (host, path, hash, time) | Delete the folder to discard the draft (an installed copy stays; `ria skill status` no longer sees it) |
 | `.ria/skills/rechecks/<name>.json` | The last `skill_recheck` of a skill: time, and for each source its address, state and new id | Delete freely; `ria skill status` then says "not re-checked yet" |
 | `.claude/skills/<name>/SKILL.md` or `.github/skills/<name>/SKILL.md` | An approved skill, written only by `ria skill approve`: the one place RIA writes outside `.ria/` besides `ria init` | A file in your working tree: commit it to share the skill, delete the folder to remove it |
+| `.ria/graph.html` | The page `ria graph` writes (unless `--out` says elsewhere) | Delete freely; `ria graph` writes it again |
 | `.ria/.gitignore` | Contains `*`, so `.ria/` never shows in `git status` or in a snapshot | |
 
 ### Design decisions
@@ -241,7 +243,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 531 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 546 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -698,6 +700,49 @@ claude mcp add ria -- node C:/path/to/repository-intelligence-assistant/dist/ind
 In VS Code's `.vscode/mcp.json` add `"--lean"` to the end of `args`. `--lean` cannot be combined with `--hooks`, `--enforce` or
 `--roles`. To go back to the whole tool set, run `init` again without `--lean` and with `--force`.
 
+**See the repository as a picture (`ria graph`).** For a person, not for a chat: it writes one HTML page that draws the
+repository, so the structure can be read without opening files. It is a command-line tool only (no MCP tool: a chat has no use
+for a picture), and the page loads nothing from the internet and needs no server.
+
+```powershell
+node dist/index.js graph                       # writes .ria/graph.html (git never sees it); open it in a browser
+node dist/index.js graph --out C:/temp/map.html --no-cache --root C:/path/to/other/repo   # writes nothing into that repository
+node dist/index.js graph --focus src/gate      # only the files under a folder
+node dist/index.js graph --no-history          # skip reading git for what changes together (faster on a huge history)
+```
+
+- **Folders view** (the first view of a big repository): the folders as circles sized by their file count, with an arrow
+  between two folders as thick as the number of imports from one to the other. This is the architecture: which folders are the
+  base everything stands on, and which only use the others. Double-click a folder to open its files.
+- **Files view:** one dot per file (bigger for more lines, a dashed ring for a test, colour by folder), an arrow from a file to
+  each file it imports, and a dashed orange line between code files that change together in git without importing each other.
+  Click a dot: it lights up what it imports and what imports it, and the side panel lists the functions, classes, methods and
+  constants found in the file with their kinds and line numbers (click a row to copy `path:line`), the files it imports and the
+  files that import it, what changes with it, and any relative import that did not resolve. The panel also lists the most
+  depended-on files of the repository, which are the ones that are risky to change.
+- **Moving around:** scroll to zoom, drag to move, drag a dot to pull it aside, `/` to search file names and the functions and
+  classes found in files, `Esc` to clear. Documents and configuration (README, JSON, `.gitkeep`) are hidden unless "config &
+  docs" is ticked, because they change with everything and are not what the picture is about. A link can open the page on a
+  view: `graph.html#view=folders`, `#folder=src/gate`, `#file=src/server.ts`, `#q=gate`, `#docs=1`.
+- **How big, how fast** (this machine): this repository (87 files) in about 1 s and 0.3 MB; a 4,740-file, 1.8-million-line
+  repository with 1,488 commits in 6.7 s and 1.4 MB. Files view shows at most the 320 most connected files at a time (choose a
+  folder to see the rest), and a file with more than 150 symbols (fewer in a big repository) shows an even sample of them with
+  the count of the rest.
+- **Checked** by rendering the page headless in Chrome on three repositories (this one; a Python project of 121 files in which
+  the main script shows as the hub with its engines around it; the big one) and reading the screenshots. That found three
+  things the code alone did not: labels piled on top of each other (they are now placed most-important first and a label that
+  would cover another is left out until you zoom), every dashed line running to the README (documents and configuration are no
+  longer joined), and the selected file's own neighbours covering each other. A test runs the page in a real browser when the
+  machine has Chrome or Edge (and says it was skipped when not), and another breaks the page on purpose to be sure it would notice.
+- **What it does not show.** Only imports are drawn: which function calls which is not known, because RIA reads code with
+  patterns and not a parser (a real parser is in the backlog). The functions listed are the ones the patterns find, so a method
+  with an unusual signature can be missing, and an import the patterns could not resolve is a missing arrow (the panel counts
+  them). Files that change together come from the last 1,500 commits, so a project with little history shows few.
+- **Safe to open on a repository that is not yours.** File and symbol names come from the repository, which can be anyone's.
+  They are embedded as JSON with every `<`, `>` and `&` escaped (a name cannot close the script tag) and drawn with `textContent`
+  and never as markup; a test feeds the page a name made of a closing tag and a script and checks that nothing escapes. The page
+  contains no request and no library: a test fails if it ever contains `http`, `fetch`, `eval` or `innerHTML`.
+
 **Roles, and how the right one is chosen.** The tools work on their own, but a chat does not know which one to use
 when. `ria init` installs the MCP config plus seven roles: instruction files that say which RIA tools to call in
 which order, when to stop, and what to report. Six are specialists; the seventh, the **Autopilot**, runs a whole
@@ -908,6 +953,7 @@ node dist/index.js context --query "retry logic for webhooks" --max-tokens 6000
 node dist/index.js path src/index.ts src/repo/graph.ts
 node dist/index.js impact src/repo/graph.ts --depth 3
 node dist/index.js plan --plan "Small=src/repo/graph.ts" --plan "Both=src/repo/graph.ts,src/repo/resolve.ts"
+node dist/index.js graph                  # a picture of the repository: .ria/graph.html, open it in a browser
 ```
 
 **Measure it** (nothing is written to the repository):
@@ -1224,7 +1270,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 531 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 546 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
