@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { evaluateGate, formatGateEval } from "./eval/gate-eval";
 import { evaluateHistory, formatHistoryEval } from "./eval/history-eval";
 import { gateBegin, gateCheck, gateRollback } from "./gate/gate";
+import { decidePretool, parsePretoolInput, pretoolOutput } from "./hooks/pretool";
 import { parsePromptInput, promptHookOutput } from "./hooks/prompt";
 import { decideStop, parseStopInput } from "./hooks/stop";
 import { Host, applyInit, formatInit, planInit } from "./init/init";
@@ -36,7 +37,7 @@ Commands:
   impact <file...>            What a change would touch        [--depth <n>]
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
   init --host claude|copilot|both   Install the MCP config and the role files into --root; preview unless --apply
-                              [--roles reader,fixer] [--on-path] [--force] [--hooks] [--apply]
+                              [--roles reader,fixer] [--on-path] [--force] [--hooks [--enforce]] [--apply]
   eval history                Replay the repository's own git history against the tools (read-only)  [--commits <n>] [--max-files <n>]
                               [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
@@ -59,6 +60,8 @@ Commands:
   hook prompt                 Claude Code UserPromptSubmit hook: tells the chat which role each request needs (reads the hook JSON on stdin)
   hook stop                   Claude Code Stop hook: keeps the chat working while the gate says its change made things worse
                               (reads the hook JSON on stdin)  [--max-blocks <n>] [--max-age-hours <n>]
+  hook pretool                Claude Code PreToolUse hook (opt-in, ria init --hooks --enforce): refuses an edit of a project file until
+                              gate_begin has run (reads the hook JSON on stdin)  [--max-age-hours <n>]
 
 Options:
   --root <dir>                Repository to analyse (default: $RIA_ROOT, for "hook" $CLAUDE_PROJECT_DIR, or the current directory)
@@ -124,6 +127,7 @@ function main(): void | Promise<void> {
       "on-path": { type: "boolean" },
       force: { type: "boolean" },
       hooks: { type: "boolean" },
+      enforce: { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       "max-chars": { type: "string" },
@@ -188,6 +192,7 @@ function main(): void | Promise<void> {
       onPath: values["on-path"],
       force: values.force,
       hooks: values.hooks,
+      enforce: values.enforce,
     });
     if ("error" in plan) throw new Error(plan.error);
     const written = values.apply ? applyInit(root, plan) : 0;
@@ -259,8 +264,16 @@ function main(): void | Promise<void> {
     if (out) process.stdout.write(`${out}\n`);
     return;
   }
+  if (command === "hook" && args[0] === "pretool") {
+    // no index and no gate run started: with nothing to enforce, the hook must not write a .ria/ cache into the repository
+    const d = decidePretool(root, parsePretoolInput(readStdin()), { maxAgeHours: intOption(values["max-age-hours"], "max-age-hours") });
+    if (d.note) process.stderr.write(`${d.note}\n`);
+    const out = pretoolOutput(d);
+    if (out) process.stdout.write(`${out}\n`);
+    return;
+  }
   if (command === "hook") {
-    if (args[0] !== "stop") throw new Error("hook needs a subcommand: prompt or stop");
+    if (args[0] !== "stop") throw new Error("hook needs a subcommand: prompt, stop or pretool");
     // before the index exists: with no gate run to enforce, the hook must not write a .ria/ cache into the repository
     const raw = readStdin();
     return decideStop(root, parseStopInput(raw), {

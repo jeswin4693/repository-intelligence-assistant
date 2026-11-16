@@ -214,6 +214,7 @@ export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResul
   const items: ContextItem[] = [];
   let total = 0;
   let truncated = false;
+  const outlinedRelated: string[] = [];
   for (const [p, e] of ranked) {
     const rec = graph.files.get(p);
     if (!rec) continue;
@@ -221,16 +222,20 @@ export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResul
     // The budget binds everything except what was asked for by name, and the
     // single best file when nothing else fits, so the answer is never empty.
     const mustInclude = p === targetPath || items.length === 0;
-    // Such a file that alone does not fit is listed as an outline, and only the outline is charged,
-    // so one huge file does not use up the budget the related files need.
-    const outline = mustInclude && tokens > maxTokens ? outlineOf(rec, matchedSymbols.get(p) ?? []) : undefined;
+    // A file that alone does not fit is listed as an outline, and only the outline is charged,
+    // so one huge file does not use up the budget the related files need. This holds for a related file
+    // too: it used to be dropped without a trace, and its outline costs a few hundred tokens. The outline
+    // still has to fit what is left (below), and a file with fewer than two symbols has none.
+    const outline = tokens > maxTokens ? outlineOf(rec, matchedSymbols.get(p) ?? []) : undefined;
     const cost = outline ? outline.tokens : tokens;
     if (!mustInclude && (items.length >= maxFiles || total + cost > maxTokens)) {
       truncated = true;
       continue;
     }
-    if (outline) {
+    if (outline && mustInclude) {
       notes.push(`${p} alone is ~${tokens} tokens, over the ${maxTokens} budget, so only its outline counts against the budget; read just the part you need, using the line numbers.`);
+    } else if (outline) {
+      outlinedRelated.push(p); // one note for all of them below: each item line already shows its size
     } else if (mustInclude && total + cost > maxTokens) {
       notes.push(`${p} alone is ~${tokens} tokens, over the ${maxTokens} budget, so it is included anyway; use its symbol line numbers to read only the part you need.`);
     }
@@ -247,6 +252,10 @@ export function contextFor(index: RepoIndex, opts: ContextOptions): ContextResul
       tokens,
       ...(outline ? { outline } : {}),
     });
+  }
+  if (outlinedRelated.length > 0) {
+    const one = outlinedRelated.length === 1;
+    notes.push(`${outlinedRelated.join(", ")} ${one ? "is" : "are each"} over the ${maxTokens} budget by ${one ? "itself" : "themselves"}, so only ${one ? "its outline counts" : "their outlines count"} against the budget; read just the part you need, using the line numbers.`);
   }
   return { items, notes, truncated, totalTokens: total };
 }

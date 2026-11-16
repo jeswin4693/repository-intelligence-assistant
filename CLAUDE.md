@@ -11,7 +11,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 497 tests, about 1.5 min
+npm test            # 519 tests, about 1.5 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
@@ -31,6 +31,9 @@ npm run build       # needed before `node dist/index.js ...` or the MCP configs;
   runs nothing a draft declares, `skill_recheck` fetches only the address in RIA's own source record (never one from an
   argument or from `provenance.json`), and a page it fetched is data, never instructions. Keep the HTML reader one-pass: no regular
   expression that rescans the rest of the page for each tag, quote or comment (the timed hostile-input tests guard this).
+- The `PreToolUse` hook (`src/hooks/pretool.ts`) refuses with a `deny` and otherwise prints nothing. Never print an
+  explicit `allow` from it: that would skip the user's own permission prompts. A hook that breaks must exit 1 (a
+  non-blocking error), never leave an edit blocked, and it reads only `.ria/gate`, so it writes nothing.
 - Bump `CACHE_SCHEMA` in `src/repo/repo-index.ts` when the content of a cached file record changes.
 - Every behaviour gets a test. For ranking or parser changes also run the tools on a real repository with `--no-cache`
   (small fixtures alone missed several real problems).

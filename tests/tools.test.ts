@@ -230,6 +230,7 @@ describe("contextFor with a file too big for the budget", () => {
   const fns = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `export function ${prefix}${i}() { return ${i}; }\n`).join("");
   // the specifier is a variable so RIA's own gate does not read fixture text as a broken import of this repository
   const importFn1 = (from: string) => `import { fn1 } from "${from}";\n`;
+  const importNamed = (name: string, from: string) => `import { ${name} } from "${from}";\n`;
   const BUDGET = 400;
 
   function bigFixture(): string {
@@ -307,6 +308,87 @@ describe("contextFor with a file too big for the budget", () => {
       const r = contextFor(i2, { target: "src/big.ts", maxTokens: 20000 });
       assert.ok(!("error" in r));
       assert.equal(r.items.some((i) => i.outline), false);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("outlines a related file that alone is over the budget instead of dropping it", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      // user.ts is small and imports big.ts: big.ts is related, not the target and not the best match
+      const r = contextFor(i2, { target: "src/user.ts", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      assert.deepEqual(r.items.map((i) => i.path), ["src/user.ts", "src/big.ts"]);
+      assert.equal(r.items[0].outline, undefined, "the small target is listed whole");
+      const big = r.items[1];
+      assert.ok(big.tokens > BUDGET * 2, "the file itself is far over the budget");
+      assert.ok(big.outline, "the related file got an outline");
+      assert.ok(big.outline.entries.length <= 40);
+      assert.ok(big.outline.entries.every((e) => !/matches the query/.test(e)), "there was no query, so nothing is marked as matching");
+      assert.ok(r.totalTokens <= BUDGET, `used ${r.totalTokens}`);
+      assert.equal(r.truncated, false, "nothing was left out");
+      assert.match(r.notes.join(" "), /src\/big\.ts is over the 400 budget by itself, so only its outline counts against the budget/);
+      assert.match(formatContext(r, "q", BUDGET), /src\/big\.ts {2}\[dependency\].*\(outline only, ~\d+ tok counted\)/);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("says it once when several related files are shown as outlines", () => {
+    const d = makeRepo({
+      "src/big1.ts": fns(100, "a"),
+      "src/big2.ts": fns(100, "b"),
+      "src/hub.ts": `${importNamed("a1", "./big1")}${importNamed("b1", "./big2")}export const h = [a1, b1];\n`,
+    });
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { target: "src/hub.ts", maxTokens: 800 });
+      assert.ok(!("error" in r));
+      assert.deepEqual(r.items.map((i) => i.path), ["src/hub.ts", "src/big1.ts", "src/big2.ts"]);
+      assert.ok(r.items.slice(1).every((i) => i.outline && i.tokens > 800), "both are over the budget and shown as outlines");
+      assert.ok(r.totalTokens <= 800, `used ${r.totalTokens}`);
+      const outlineNotes = r.notes.filter((n) => /outline/.test(n));
+      assert.equal(outlineNotes.length, 1, "one note, not one per file");
+      assert.match(outlineNotes[0], /src\/big1\.ts, src\/big2\.ts are each over the 800 budget by themselves, so only their outlines count/);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("still drops a related file that is over the budget and has no outline, and says the answer was cut", () => {
+    const d = makeRepo({
+      "src/lonely.ts": `export function lonely() {\n${"  // padding padding padding padding padding\n".repeat(60)}}\n`,
+      "src/use.ts": `${importNamed("lonely", "./lonely")}export const l = lonely();\n`,
+    });
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      const r = contextFor(i2, { target: "src/use.ts", maxTokens: BUDGET });
+      assert.ok(!("error" in r));
+      assert.deepEqual(r.items.map((i) => i.path), ["src/use.ts"], "one symbol: nothing to cut it by, so it cannot be shown short");
+      assert.equal(r.truncated, true);
+      assert.ok(r.totalTokens <= BUDGET);
+    } finally {
+      cleanup(d);
+    }
+  });
+
+  it("drops a related file whose outline does not fit what is left of the budget either", () => {
+    const d = bigFixture();
+    try {
+      const i2 = new RepoIndex(d, { cache: false });
+      i2.refresh();
+      // user.ts costs about 14 tokens; an outline of 40 symbols costs several hundred
+      const r = contextFor(i2, { target: "src/user.ts", maxTokens: 60 });
+      assert.ok(!("error" in r));
+      assert.deepEqual(r.items.map((i) => i.path), ["src/user.ts"]);
+      assert.equal(r.truncated, true);
+      assert.ok(r.totalTokens <= 60, `used ${r.totalTokens}`);
+      assert.doesNotMatch(r.notes.join(" "), /only its outline counts/, "no outline was listed, so no note about one");
     } finally {
       cleanup(d);
     }

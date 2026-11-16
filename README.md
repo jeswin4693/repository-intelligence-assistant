@@ -129,7 +129,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/gate/store.ts`, `gate.ts`, `types.ts` | Run state on disk, pruning; begin / check / rollback and the report |
 | | `src/gate/targeted.ts` | `gate_check` with `scope: "tied"`: whether and how to run only the tests tied to the changed files (the narrow commands RIA knows for jest, vitest, node --test and pytest), and why it falls back |
 | Roles | `src/init/roles.ts`, `render.ts`, `init.ts` | The seven roles written once; rendered as Claude Code skills and VS Code agents; `ria init` plans and applies the install, hooks included (CLI only, not an MCP tool) |
-| Hooks | `src/hooks/prompt.ts`, `stop.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse |
+| Hooks | `src/hooks/prompt.ts`, `stop.ts`, `pretool.ts` | `ria hook prompt`: the Claude Code `UserPromptSubmit` hook that tells the chat which role each request needs. `ria hook stop`: the `Stop` hook that holds the chat back while the gate says its change made things worse. `ria hook pretool` (opt-in): the `PreToolUse` hook that refuses an edit of a project file until `gate_begin` has run |
 | Evaluation | `src/eval/history-eval.ts`, `gate-eval.ts` | `ria eval history`: replays a repository's git history against the tools. `ria eval gate`: the gate against injected faults in throwaway projects |
 | Skill forge | `src/skills/fetch-source.ts` | `fetch_source`: one public web page, with the address rules, limits and the report the chat sees |
 | | `src/skills/sanitize.ts` | A page to plain text (a hand-written one-pass HTML reader), and the pattern check for text that tries to give the chat orders |
@@ -137,7 +137,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | | `src/skills/check.ts` | `skill_test`: static checks on a draft (front matter, provenance against RIA's record of each fetch, hidden text, size); runs nothing from the draft |
 | | `src/skills/register.ts` | `skill_register` (review, writes nothing) and `approveSkill` (the only code that writes into a skills folder; command line only, needs a person's typed confirmation); `skillStatus` |
 | | `src/skills/recheck.ts` | `skill_recheck`: fetch again the addresses in RIA's own source records, compare, save the result under `.ria/skills/rechecks/` |
-| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 497 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
+| Tests | `tests/*.test.ts`, `tests/helpers.ts`, `tests/skills-helpers.ts` | 519 tests: parsers, graph, git history, plan scoring, roles and install, role routing and its prompt sets, evaluation, snapshots, full gate flows, both hooks, the skill forge against a local web server and hostile pages, the skill check, approval and source re-check, real MCP client over stdio |
 
 ### What happens on a call
 
@@ -212,7 +212,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 | A baseline may reuse a result only when it is a full pass of the same command on a byte-identical git tree, at most 30 minutes old; a reused result keeps the time the command really ran | The baseline was the larger half of the gate's cost and the last `gate_check` had just run the same suite on the same files. A reused result can only be a pass, so a wrong reuse shows a problem as new instead of hiding one; the tree does not cover installed packages or services, hence the expiry, `reuseMinutes` and `fresh` |
 | Per-seed maximum, not a sum, when ranking `context_for` | A test that is both a dependent and "the test for" a file must not outrank the file itself |
 | Token budget binds everything except an explicitly requested target | The answer stays small, and asking for a big file by name still works (with a note) |
-| A best file or target that alone is over the budget is listed as an outline of its symbols, and only the outline is charged; a file with fewer than two symbols is charged in full | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading |
+| A file that alone is over the budget is listed as an outline of its symbols, and only the outline is charged. The best file and the target always get one; a related file gets one only if the outline fits what is left of the budget and the file limit, and is dropped otherwise. A file with fewer than two symbols has no outline: the best file or target is charged in full, a related one is dropped | One huge file used the whole budget (a third of tasks on the measured repository) and crowded out the files related to it; with a single symbol an outline would hide the real cost of reading. A related file that was too big used to vanish from the answer without a trace, though its outline costs about 300 tokens and shows where to read |
 | Run ids end in milliseconds plus random hex and are matched against an exact pattern | Runs sort in creation order, and an id from tool input can never become a path |
 | `core.longpaths=true` on every git call, short scratch file names | Deep folders (OneDrive) pass Windows' 260-character limit once git adds `.lock` files |
 | Git `HEAD` is read once per refresh, not once per history lookup | `impact` and `plan_score` ask for history once per file, and every lookup spawned a git process |
@@ -241,7 +241,7 @@ something. Other tools answer "what does this code do?". RIA answers "what shoul
 
 ## Status: what is built
 
-Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 497 tests pass, typecheck and build
+Steps 1 to 6 are done. About 8,100 lines of source and 6,700 lines of tests. All 519 tests pass, typecheck and build
 are clean.
 
 | Step | What | State |
@@ -310,7 +310,7 @@ with `ria eval history`. The numbers describe that repository and nothing else.
 |---|---|---|
 | One file of a real commit is held out: did `impact` list it? (453 cases from 150 commits) | 39% | 5% for a list of the same length from the same folders, 0.3% at random |
 | ...through what | 16% git history alone, 11% import graph, 11% tied tests | |
-| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 52%, and 26% of the commit's files on average (42% and 19% before oversized files became outlines, same cases) | 0.3% at random |
+| `context_for` with the commit subject as the task: was a changed file among the 12 returned? (48 cases) | 69%, and 41% of the commit's files on average (52% and 26% before a related oversized file became an outline, and 42% and 19% before any oversized file did; same cases, tokens returned unchanged) | 0.3% at random |
 | How much `context_for` returned | median about 7,900 tokens (0.05% of reading the whole repository), mean about 7,800 (it was 44,600) | An oversized file counts as its outline, not as the file, so "over budget" is 0% by construction (it was a third of the answers); the chat can still read the whole file |
 | Does the `plan_score` of a change predict a fix on the same files within 10 commits better than file count does? (147 changes) | 61%, plus or minus 11 | 50%, plus or minus 11 for file count: not shown to be better |
 | The gate against 13 injected faults and fixes | 13 of 13 verdicts right, 13 of 13 rollbacks byte-exact | Cases the gate was built for, so a guard against regressions, not an independent test |
@@ -324,6 +324,23 @@ more than 25 tied tests, the held-out test was somewhere in the list in 79 of th
 (11%), and the lists where it was missed had a median of 155 tests. Ordering the list by co-change history, by
 closeness of path, or both moved the first-25 figure from 51 to at most 54, so nothing in the graph or the history
 separates those tests and the ordering was not kept.
+
+A related file that was too big for the `context_for` budget used to be dropped without a trace. Showing it as an outline
+(2026-11-16, same repository, `ria eval history --no-cache` run on the code before and after) took the same 48 cases from
+52% to 69% (at least one changed file among the 12 returned) and from 26% to 41% of the commit's files, with the tokens
+returned unchanged (median 7,867 to 7,870) and `impact` and `plan_score` identical, as they should be. Read it as direction,
+not proof: one repository, 48 cases, and 17 points is about 8 more cases. A second step was tried the same way and not
+kept: also showing as an outline a related file that fits the budget alone but not what is left after the better-ranked
+files. It moved the same cases from 69% to 71% (one case in 48) and from 41% to 42%, with the tokens returned about the
+same (mean 7,810 to 7,719), which is not shown to help, so such a file is still dropped and the answer says it was cut.
+
+A second repository (2026-11-16): the only other one on this machine is RIA itself, with 24 commits and 83 files, so only
+16 commits were usable and the run calls its own rates an anecdote. `impact` showed the held-out file in 75% of 60
+questions against 72% for a list of the same length from the same folders (21% at random), so on a project this small it
+is not shown to beat the folder guess. `context_for` returned a changed file in 81% of 16 cases and 20% of the commit's
+files, against 14% for 12 random files (12 files are 14% of this repository). The `plan_score` check was skipped, because
+it needs 10 changes followed by a fix and there were none. None of this says anything about large repositories, which is
+where the tools are meant to help; it leaves the open item as it was: one large repository has been measured.
 
 **Checked in a real host (2026-10-26):** Claude Code in VS Code started the server from this repository's
 [.mcp.json](.mcp.json) and its model called `repo_map`, `impact` and `plan_score` successfully. And a headless
@@ -447,8 +464,9 @@ long gate run, and any model other than the smallest Claude one. The history num
 Symbols in `context_for` and `impact` carry line numbers (`function auth (L120)`) so a large file
 can be read in part. `start_task`, the navigation tools, `skill_test` and `skill_register` are marked read-only; the
 gate tools and the other forge tools are not, `gate_rollback` is marked destructive, and `fetch_source` is marked
-open-world because it reaches outside the machine. The roles do not use the forge tools yet: the server's instructions
-tell any chat when to use them. Approving and installing a skill is not a tool: it is `ria skill approve <name>`, a
+open-world because it reaches outside the machine. The Writer and the Autopilot (where a request to learn from a page is
+routed) carry the forge tools and one step for them; the read-only roles do not, and the server's instructions tell any
+chat when to use them. Approving and installing a skill is not a tool: it is `ria skill approve <name>`, a
 command a person runs at a terminal (see Step 5).
 
 ---
@@ -627,15 +645,16 @@ node dist/index.js init --host both --root C:/path/to/your/repo --apply         
 |---|---|
 | `--host claude` | the `ria` entry in `.mcp.json`, and `.claude/skills/ria-<role>/SKILL.md` |
 | `--host claude --hooks` | also `.claude/settings.local.json` with two hooks: the one that picks the role for each request, and the one that holds the chat to the gate (both described below). The file is personal: keep it out of git |
+| `--host claude --hooks --enforce` | also a third hook, `PreToolUse`, that refuses an edit of a project file until `gate_begin` has run (opt-in; described below) |
 | `--host copilot` | the `ria` entry in `.vscode/mcp.json`, and `.github/agents/ria-<role>.agent.md` |
 
 | Role | Use it to | Edits | RIA tools |
 |---|---|---|---|
-| Autopilot | do a whole task start to finish, or several kinds of work at once, or when the request is unclear; asks only when a decision is needed | yes | everything, including the gate |
+| Autopilot | do a whole task start to finish, or several kinds of work at once, or when the request is unclear; asks only when a decision is needed | yes | everything, including the gate and the skill tools |
 | Reader | understand or explain code, find where something lives, see who uses it | no | the navigation tools |
 | Analyser | judge size and risk before a change, compare approaches | no | the navigation tools and `plan_score` |
 | Extractor | move, split or rename code without changing behaviour | yes | everything, including the gate |
-| Writer | create something new (a file, a folder, a feature, a test) or change how something works on purpose | yes | everything, including the gate |
+| Writer | create something new (a file, a folder, a feature, a test) or change how something works on purpose | yes | everything, including the gate and the skill tools |
 | Fixer | fix a bug or a failing check, and prove it | yes | the navigation tools and the gate |
 | Reviewer | review someone else's change | no | the navigation tools |
 
@@ -710,8 +729,9 @@ What is enforced and what is not:
   GitHub's custom agent reference, so if your VS Code version ignores it, replace the names with `ria/*`.
 - **Claude Code** skills are instructions too, and RIA writes no permission rules: tool approval stays in
   your own settings. The routing hook is advice: it tells the chat which role the request needs, and the chat can
-  still skip that role's steps. What Claude Code hooks can enforce is the end of the loop: see "Make Claude Code
-  finish only when the gate agrees" below.
+  still skip that role's steps. What Claude Code hooks can enforce is the end of the loop (see "Make Claude Code
+  finish only when the gate agrees" below) and, if you opt in with `--enforce`, the start of it (see "Make Claude Code
+  start with a baseline" below).
 
 **Make Claude Code finish only when the gate agrees.** `ria hook stop` is a Claude Code `Stop` hook. When the chat is
 about to finish and the latest gate run (the one it started with `gate_begin`) says its change made things worse
@@ -755,6 +775,37 @@ existing file, keeps your own hooks, and does nothing if RIA's hooks are already
   non-blocking error, so a broken hook cannot trap the chat.
 - Like `gate_check`, it runs the project's own commands. It does not make the chat call `gate_begin`: without a
   baseline there is nothing to compare with, so a chat that edits without a baseline is not held to anything.
+
+**Make Claude Code start with a baseline (opt-in).** `ria hook pretool` is a Claude Code `PreToolUse` hook for Edit,
+Write, MultiEdit and NotebookEdit. The routing hook only advises, a chat can skip the gate (in the real-host runs a chat
+on the smallest model sometimes did), and the stop hook can only hold a chat to a baseline it started. This hook refuses
+an edit of a file in the repository until a gate run exists, and hands the chat the reason: call `gate_begin`, then
+repeat the edit. It is not part of `--hooks` alone, because it makes even a one-line edit start with a baseline:
+
+```powershell
+node dist/index.js init --host claude --hooks --enforce --root C:/path/to/your/repo --apply
+```
+
+- **What it holds back.** An edit of a file inside the repository, when there is no gate run or the latest one is older
+  than 12 hours (`--max-age-hours`; probably another task's). Not held back: files outside the repository (a scratch or
+  memory file), anything under `.ria`, `.claude` and `.git`, every other tool (so `gate_begin` itself is never blocked),
+  and a folder that is not a git repository (the gate needs git, so nothing could be asked for).
+- **How it refuses.** It prints `permissionDecision: "deny"` with the reason as JSON on stdout and exits 0. To let an edit
+  through it prints nothing and never an explicit `allow`, which would skip your own permission prompts. A hook that
+  cannot read its input lets the edit through, and one that breaks exits 1, which Claude Code treats as a non-blocking
+  error. It reads only `.ria/gate` and writes nothing.
+- **What it costs.** The baseline the chat is asked for is a full test run when files changed since the last passing run
+  (a passing run on identical files from the last 30 minutes is reused, so it takes seconds then).
+- **What it does not do.** It checks that a baseline exists, not that it belongs to this task: a run from earlier the same
+  day lets edits through. It covers the four edit tools, not a change made through the shell (`sed -i`, a redirect), which
+  the chat can still do. And a chat that cannot call `gate_begin` (the RIA server is not loaded) cannot edit until the
+  server is loaded or the `PreToolUse` entry is deleted from `.claude/settings.local.json`.
+- **Checked in Claude Code 2.1.323 (2026-11-16)**, headless (`claude -p`, the smallest model, the RIA server, a
+  throwaway project set up with `ria init --enforce --apply`), reading the event stream. The first `Write` was refused and
+  the chat was shown the reason as "PreToolUse:Write hook error: Do not edit `notes.txt` yet: no change-gate baseline...";
+  it then loaded `gate_begin` with ToolSearch as the reason said, called it, repeated the `Write`, which went through, and
+  finished with `gate_check` (unchanged). One run, one small model: it shows that the protocol works and that a chat can
+  follow the reason, not how often it will.
 
 **The Autopilot.** Hand it a task and it works out what kind of task it is (a question, a change or a review),
 finds the files, checks the impact, compares approaches with `plan_score` when there is more than one, records a
@@ -830,7 +881,9 @@ default root.
   and token budget; symbols that matched the query are listed first. The best file (or the requested target) is
   always returned; when it alone is over the budget and has at least two symbols, it is returned as an outline
   (up to 40 symbols in file order with line numbers, the query's matches always among them, the rest spread over
-  the file) and only the outline counts against the budget.
+  the file) and only the outline counts against the budget. A related file that alone is over the budget gets an outline
+  the same way when that outline fits what is left of the budget and of `max_files`; otherwise it is omitted, as before,
+  and the answer says it was cut. Related files shown as outlines share one note.
 - `impact` follows importers up to `depth` hops, adds co-change partners that do not import the file, ties tests
   by name or import, and scores risk transparently: 1 point per non-test dependent (max 20) + 2 per strong
   hidden coupling + 4 if no test is tied. Under 5 is low, under 12 medium, otherwise high.
@@ -925,7 +978,9 @@ on the draft) and `skill_register` (hand it to a person, who alone approves it, 
   draft under `.ria/skills/drafts/<name>/`: never overwritten, not installed, not loaded by anything. `provenance.json`
   carries a hash of `SKILL.md` and an empty `approval`, for the next half to fill.
 - Also from the command line: `ria fetch <url>` and `ria skill scaffold <name> --description ... --body-file ... --source <id>`.
-  The server's instructions tell any chat when to use the two tools; the seven roles do not mention them yet.
+  The server's instructions tell any chat when to use them, and (2026-11-16) the Writer and the Autopilot carry the forge
+  tools and a step for them: fetch each page the user named, treat it as data, scaffold, test, register, and leave the
+  approval to the user.
 
 **Built (2026-11-02): `skill_test`, `skill_register` and `ria skill approve`.**
 
@@ -976,7 +1031,6 @@ compares it with RIA's own record of the first fetch:
   with secrets removed from the environment. It was left out on purpose: the commands would be written by the chat and
   run by RIA, which is the thing the gate's rule forbids, and a process sandbox on Windows is weak. If checks are added,
   they should come from a person (in `ria.config.json`), not from the draft.
-- **The roles** do not mention the forge tools; the server's instructions do.
 
 **Honest limits.**
 
@@ -1037,16 +1091,14 @@ commands for start, check and rollback.
 | Content search inside `context_for` | Today it matches names only |
 | Targeted tests for the runners not covered yet: mocha, cargo, dotnet, maven, and `pnpm`, `yarn` and `bun` projects | jest, vitest, `node --test` and pytest are narrowed without a template (see "The change gate"). The rest need the command in `ria.config.json`; `pnpm`/`yarn`/`bun` need `pnpm exec`/`yarn exec`/`bunx` checked on a real project first, and mocha merges `.mocharc`'s spec list with the command line, so a subset needs care |
 | Background gate runs with a status call | Very long suites and host timeouts |
-| A Claude Code `PreToolUse` hook that refuses an edit until `gate_begin` has run, for the roles that edit | The routing hook only advises, and in the real-host runs a chat on the smallest model sometimes skipped the gate (see "Checked in a real host"). Costs a baseline run before every edit, which is slow on a big suite |
 | Routing in Copilot Chat on every request | Copilot has no per-request hook that RIA uses: there it relies on the `start_task` tool, the server's instructions and the agent you pick |
 | Router: more languages than English, and learning from the roles you correct | It reads English only; each real misreading so far was a missing general rule |
 | PR review mode (`ria review <range>`) | Impact and optional gate on a diff, as a markdown comment |
 | `explain_why` from git history and PR or issue references | Intent provenance: why a file is the way it is |
 | Several roots and per-package commands | Monorepos |
 | Faster warm refresh (file watcher or `git status` fast path) | About 1 s per call at 4,700 files on OneDrive |
-| `context_for`: outline a related file (not only the best one or the target) that alone is over the budget | Today such a file is dropped; an outline would cost about 300 tokens and show where to read |
 | `impact`: show more of the tied tests | Showing all of them found 17% of held-out files instead of 11%, but the lists that matter have a median of 155 tests; ranking them did not help (see "Measured so far"), so this is a question of output size |
-| Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits |
+| Run `ria eval history` on more repositories | One repository is an anecdote; the plan weights in particular need more fix commits. The only other repository on this machine (this one, 83 files) is too small to say anything (see "Measured so far") |
 
 ---
 
@@ -1058,8 +1110,10 @@ commands for start, check and rollback.
 - Not resolved yet: `tsconfig` path aliases other than `@/`, `~/`, `#/`, monorepo workspace packages, and C#
   namespaces shared by more than 25 files (no edge is added for those).
 - `context_for` queries match file paths and symbol names, not file contents. Pair it with a content search
-  when the task is about specific text. A highly relevant file that does not fit the token budget is dropped,
-  unless it is the best match or the requested target, which come back as an outline. An outline's cost is what
+  when the task is about specific text. A related file that fits the budget is listed whole; one that alone is over
+  the budget is listed as an outline if the outline fits what is left; a file that is under the budget alone but does not
+  fit what is left is dropped (the answer says it was cut). The best match and the requested target always come back,
+  as an outline when they alone are over the budget. An outline's cost is what
   counts against the budget, not the file's: the chat is told to read only the part it needs, but RIA cannot make
   it, and a file with a single huge symbol has no outline and is charged in full.
 - Coupling is blind to history before a rename, and needs git.
@@ -1072,7 +1126,8 @@ commands for start, check and rollback.
   cost counts whole files even though a large file can be read in part. Weights are judgement, not fitted;
   step 6 is where they get checked against gate outcomes.
 - The roles are instructions. They tell a chat how to use RIA; they cannot make it. Only the Copilot tool allow-list
-  is enforced (see "Roles and `ria init`"). The generated files follow the host documentation as fetched on
+  is enforced (see "Roles and `ria init`"), and in Claude Code the opt-in `--enforce` hook, which refuses an edit made
+  with an edit tool before `gate_begin` has run (not one made through the shell). The generated files follow the host documentation as fetched on
   2026-10-23, and both hosts have renamed these features before, so re-check the format after a major VS Code or
   Claude Code update. Built-in Copilot tool names (`read`, `search`, `edit`, `execute`) are ignored by a VS Code
   version that does not know them.
@@ -1100,7 +1155,7 @@ commands for start, check and rollback.
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 497 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
+npm test            # 519 tests, about 1.5 min: parsers, graph, history, plan scoring, roles and install, evaluation, snapshots, gate flows, the skill forge, MCP over stdio
 npm run eval        # the gate against 13 injected faults; exit code 1 if a verdict or a rollback is wrong
 npm run build       # rebuild before trying `node dist/index.js`; dist/ is not rebuilt by tests
 ```
@@ -1110,7 +1165,11 @@ every push to `main` and every pull request, on `windows-latest` with Node 24: t
 built and checked on. It has run on GitHub twice, both green (the pull request and the push to `main`, 2026-10-26).
 Before that, its steps were run in a fresh clone of the committed code with no git identity configured, as on a runner:
 all passed, in about 2 minutes. Linux and macOS have not been tried (WSL is not installed here and Docker is in
-Windows-container mode), so they are not in the workflow; add them to a matrix after the suite has run there.
+Windows-container mode), so they are not part of the job that counts. A second job, `other-platforms`, runs the same
+steps on `ubuntu-latest` and `macos-latest` and is allowed to fail (`continue-on-error`), so it tells you whether the suite
+works there without ever blocking a pull request. The workflow runs only for a pull request and for a push to `main`, not
+for a push to another branch, so the first pull request (or merge into `main`) after this is what starts it. It has not
+run yet; when it is green on both, fold them into the `check` job as a matrix and delete it.
 
 **Add a language.** A row in `extract.ts` (symbol rules, import rule), an entry in `languages.ts`, a
 resolver case in `resolve.ts`, and tests in `tests/extract.test.ts` and `tests/graph.test.ts`.

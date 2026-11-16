@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { PRETOOL_MATCHER } from "../hooks/pretool";
 import { SERVER_NAME, claudeSkill, claudeSkillPath, copilotAgent, copilotAgentPath } from "./render";
 import { ROLES, ROLE_IDS, Role } from "./roles";
 
@@ -17,6 +18,8 @@ export interface InitOptions {
   entry?: string;
   /** Claude Code only: also register the hooks that pick the role for each request and hold the chat to the gate. */
   hooks?: boolean;
+  /** Claude Code only, with `hooks`: also register the hook that refuses an edit until `gate_begin` has run. Opt-in, because it gets in the way of quick edits. */
+  enforce?: boolean;
 }
 
 export interface InitAction {
@@ -99,15 +102,23 @@ function planMcp(root: string, rel: string, key: "mcpServers" | "servers", entry
 export const HOOKS_FILE = ".claude/settings.local.json";
 
 interface HookSpec {
-  event: "UserPromptSubmit" | "Stop";
-  verb: "prompt" | "stop";
-  /** Seconds. The prompt hook only reads text; the stop hook re-runs the project's checks, which can be slow. */
+  event: "UserPromptSubmit" | "Stop" | "PreToolUse";
+  verb: "prompt" | "stop" | "pretool";
+  /** Seconds. The prompt and pretool hooks only read a little; the stop hook re-runs the project's checks, which can be slow. */
   timeout: number;
+  /** Which tools the hook runs for (PreToolUse only). */
+  matcher?: string;
+  /** Written only when asked for (`enforce`). */
+  optIn?: boolean;
 }
 const HOOKS: HookSpec[] = [
   { event: "UserPromptSubmit", verb: "prompt", timeout: 10 },
   { event: "Stop", verb: "stop", timeout: 1200 },
+  { event: "PreToolUse", verb: "pretool", timeout: 10, matcher: PRETOOL_MATCHER, optIn: true },
 ];
+
+/** A hook group as Claude Code reads it: the handler, and for PreToolUse the tools it applies to. */
+const hookGroup = (s: HookSpec, handler: Record<string, unknown>) => ({ ...(s.matcher ? { matcher: s.matcher } : {}), hooks: [handler] });
 
 /** Claude Code's exec form (`command` plus `args`): no shell, so a path with spaces needs no quoting on Windows. */
 function hookHandler(spec: HookSpec, opts: InitOptions, entry: string): Record<string, unknown> {
@@ -127,8 +138,12 @@ function isRiaHook(handler: unknown, verb: string): boolean {
 function planHooks(root: string, opts: InitOptions, entry: string, force: boolean): InitAction {
   const abs = path.join(root, HOOKS_FILE);
   const wanted = (s: HookSpec) => hookHandler(s, opts, entry);
-  const snippet = JSON.stringify({ hooks: Object.fromEntries(HOOKS.map((s) => [s.event, [{ hooks: [wanted(s)] }]])) }, null, 2);
-  if (!fs.existsSync(abs)) return { path: HOOKS_FILE, kind: "create", detail: "registers the routing hook and the gate hook", content: snippet + "\n" };
+  const specs = HOOKS.filter((s) => !s.optIn || opts.enforce === true);
+  const snippet = JSON.stringify({ hooks: Object.fromEntries(specs.map((s) => [s.event, [hookGroup(s, wanted(s))]])) }, null, 2);
+  if (!fs.existsSync(abs)) {
+    const what = opts.enforce ? "the routing hook, the gate hook and the hook that refuses an edit before gate_begin" : "the routing hook and the gate hook";
+    return { path: HOOKS_FILE, kind: "create", detail: `registers ${what}`, content: snippet + "\n" };
+  }
 
   const manual = (why: string): InitAction => ({ path: HOOKS_FILE, kind: "manual", detail: `${why}. Add this by hand:\n${snippet.replace(/^/gm, "      ")}` });
   let parsed: unknown;
@@ -142,7 +157,7 @@ function planHooks(root: string, opts: InitOptions, entry: string, force: boolea
   const next: Record<string, unknown> = { ...((parsed.hooks as Record<string, unknown> | undefined) ?? {}) };
   let changed = false;
   const kept: string[] = [];
-  for (const s of HOOKS) {
+  for (const s of specs) {
     const current = next[s.event];
     if (current !== undefined && !Array.isArray(current)) return manual(`"hooks.${s.event}" is not a list`);
     const groups: unknown[] = current ? [...current] : [];
@@ -151,7 +166,7 @@ function planHooks(root: string, opts: InitOptions, entry: string, force: boolea
       if (isObject(g) && Array.isArray(g.hooks)) g.hooks.forEach((h, hi) => void (at === undefined && isRiaHook(h, s.verb) && (at = [gi, hi])));
     });
     if (at === undefined) {
-      groups.push({ hooks: [wanted(s)] });
+      groups.push(hookGroup(s, wanted(s)));
       changed = true;
     } else if (JSON.stringify((groups[at[0]] as { hooks: unknown[] }).hooks[at[1]]) !== JSON.stringify(wanted(s))) {
       if (!force) {
@@ -172,7 +187,7 @@ function planHooks(root: string, opts: InitOptions, entry: string, force: boolea
   return {
     path: HOOKS_FILE,
     kind: "update",
-    detail: `adds the RIA hooks next to your other settings and hooks${kept.length ? ` (${kept.join(" and ")} kept as it was)` : ""} (the file is rewritten with 2-space indentation)`,
+    detail: `adds the RIA hooks (${specs.map((s) => s.verb).join(", ")}) next to your other settings and hooks${kept.length ? ` (${kept.join(" and ")} kept as it was)` : ""} (the file is rewritten with 2-space indentation)`,
     content: JSON.stringify({ ...parsed, hooks: next }, null, 2) + "\n",
   };
 }
@@ -180,6 +195,7 @@ function planHooks(root: string, opts: InitOptions, entry: string, force: boolea
 /** Works out what `ria init` would do. Writes nothing. */
 export function planInit(root: string, opts: InitOptions): InitPlan | { error: string } {
   if (!["claude", "copilot", "both"].includes(opts.host)) return { error: `Unknown host "${opts.host}". Use claude, copilot or both.` };
+  if (opts.enforce && !opts.hooks) return { error: "--enforce needs --hooks: the hook that refuses an edit before gate_begin is installed together with the other hooks." };
   let roles: Role[] = ROLES;
   if (opts.roles) {
     const unknown = opts.roles.filter((r) => !(ROLE_IDS as string[]).includes(r));
@@ -210,6 +226,9 @@ export function planInit(root: string, opts: InitOptions): InitPlan | { error: s
   if (claude) notes.push("Claude Code asks you to approve a project .mcp.json server the first time. The roles are skills under .claude/skills.");
   if (claude && opts.hooks) {
     notes.push(`The hooks run RIA on every request (to tell the chat which role it needs) and every time the chat is about to finish (to hold it to the gate). They are written to ${HOOKS_FILE}, which is personal: keep it out of git.`);
+  }
+  if (claude && opts.hooks && opts.enforce) {
+    notes.push(`--enforce: Claude Code will refuse every Edit, Write, MultiEdit and NotebookEdit of a file in this repository until the chat has called gate_begin (a baseline from the last 12 hours counts). That makes even a one-line edit start with a baseline, which is quick when nothing changed recently and takes a full test run when something did. Files outside the repository and under .ria, .claude and .git are not held back. To turn it off, delete the PreToolUse entry from ${HOOKS_FILE}.`);
   }
   if (opts.hooks && !claude) notes.push("--hooks is for Claude Code. Copilot Chat has no hook RIA uses: there the roles are agents you pick, and the start_task tool.");
   if (copilot) {
