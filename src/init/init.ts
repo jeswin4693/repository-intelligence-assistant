@@ -20,6 +20,12 @@ export interface InitOptions {
   hooks?: boolean;
   /** Claude Code only, with `hooks`: also register the hook that refuses an edit until `gate_begin` has run. Opt-in, because it gets in the way of quick edits. */
   enforce?: boolean;
+  /**
+   * Register the server in lean mode (`serve --lean`: the lookup tools only, short instructions) and write nothing else.
+   * The roles and the hooks are written for the whole tool set (they tell the chat to call the gate), so they are not
+   * installed, and cannot be combined with this.
+   */
+  lean?: boolean;
 }
 
 export interface InitAction {
@@ -45,7 +51,8 @@ function installedEntry(): string {
 
 function serverEntry(host: "claude" | "copilot", opts: InitOptions, entry: string): Record<string, unknown> {
   const launch = opts.onPath ? { command: "ria", args: ["serve"] } : { command: "node", args: [entry, "serve"] };
-  const args = host === "copilot" ? [...launch.args, "--root", "${workspaceFolder}"] : launch.args;
+  const base = host === "copilot" ? [...launch.args, "--root", "${workspaceFolder}"] : launch.args;
+  const args = opts.lean ? [...base, "--lean"] : base;
   return { type: "stdio", command: launch.command, args };
 }
 
@@ -196,7 +203,10 @@ function planHooks(root: string, opts: InitOptions, entry: string, force: boolea
 export function planInit(root: string, opts: InitOptions): InitPlan | { error: string } {
   if (!["claude", "copilot", "both"].includes(opts.host)) return { error: `Unknown host "${opts.host}". Use claude, copilot or both.` };
   if (opts.enforce && !opts.hooks) return { error: "--enforce needs --hooks: the hook that refuses an edit before gate_begin is installed together with the other hooks." };
-  let roles: Role[] = ROLES;
+  if (opts.lean && (opts.hooks || opts.enforce || opts.roles)) {
+    return { error: "--lean cannot be combined with --hooks, --enforce or --roles: the roles and hooks tell the chat to call the gate and the role router, which a lean server does not offer." };
+  }
+  let roles: Role[] = opts.lean ? [] : ROLES;
   if (opts.roles) {
     const unknown = opts.roles.filter((r) => !(ROLE_IDS as string[]).includes(r));
     if (unknown.length) return { error: `Unknown role ${unknown.map((r) => `"${r}"`).join(", ")}. Roles: ${ROLE_IDS.join(", ")}.` };
@@ -223,7 +233,10 @@ export function planInit(root: string, opts: InitOptions): InitPlan | { error: s
     if (!fs.existsSync(entry)) notes.push(`Warning: ${entry} does not exist yet. Run "npm run build" in the RIA folder before the chat starts the server.`);
     notes.push(`The MCP config names this machine's RIA folder (${entry}). If the repository is shared, install RIA so that \`ria\` is on the PATH and run this again with --on-path.`);
   }
-  if (claude) notes.push("Claude Code asks you to approve a project .mcp.json server the first time. The roles are skills under .claude/skills.");
+  if (opts.lean) {
+    notes.push("--lean: only the MCP server entry is written, and it starts RIA with --lean (repo_map, context_for, find_path and impact, with short instructions). No roles and no hooks: they assume the gate, which a lean server does not offer. To get the whole tool set later, run init again without --lean and with --force.");
+  }
+  if (claude) notes.push(`Claude Code asks you to approve a project .mcp.json server the first time.${opts.lean ? "" : " The roles are skills under .claude/skills."}`);
   if (claude && opts.hooks) {
     notes.push(`The hooks run RIA on every request (to tell the chat which role it needs) and every time the chat is about to finish (to hold it to the gate). They are written to ${HOOKS_FILE}, which is personal: keep it out of git.`);
   }

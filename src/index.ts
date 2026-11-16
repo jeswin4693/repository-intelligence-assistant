@@ -29,7 +29,8 @@ const USAGE = `Repository Intelligence Assistant
 Usage: ria <command> [options]
 
 Commands:
-  serve                       Start the MCP server on stdio (for VS Code / Claude Code)
+  serve                       Start the MCP server on stdio (for VS Code / Claude Code)  [--lean]
+                              --lean offers only the lookup tools (repo_map, context_for, find_path, impact) with short instructions: far fewer tokens per turn
   map                         Repository overview            [--focus <dir>] [--max-tokens <n>]
   context <file|symbol>       Files worth reading for a file   [--query <text>] [--max-files <n>] [--max-tokens <n>]
   context --query <text>      ...or for a task described in words
@@ -38,6 +39,7 @@ Commands:
   plan --plan "Name=a.ts,b.ts" --plan "Other=c.ts"   Rank candidate plans (repeat --plan)  [--depth <n>]
   init --host claude|copilot|both   Install the MCP config and the role files into --root; preview unless --apply
                               [--roles reader,fixer] [--on-path] [--force] [--hooks [--enforce]] [--apply]
+                              --lean writes only the MCP entry, in lean mode (lookup tools, short instructions; no roles, no hooks)
   eval history                Replay the repository's own git history against the tools (read-only)  [--commits <n>] [--max-files <n>]
                               [--min-recall <0-1>] [--min-context-hit <0-1>]   exit code 1 when a rate is below the threshold
   eval gate                   Run the gate against injected faults in throwaway projects (exit code 1 if a verdict is wrong)
@@ -128,6 +130,7 @@ function main(): void | Promise<void> {
       force: { type: "boolean" },
       hooks: { type: "boolean" },
       enforce: { type: "boolean" },
+      lean: { type: "boolean" },
       "max-tokens": { type: "string" },
       "max-files": { type: "string" },
       "max-chars": { type: "string" },
@@ -155,7 +158,7 @@ function main(): void | Promise<void> {
   const root = path.resolve(values.root ?? process.env.RIA_ROOT ?? (command === "hook" ? process.env.CLAUDE_PROJECT_DIR : undefined) ?? process.cwd());
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   const indexOptions = { cache: !values["no-cache"] && !process.env.RIA_NO_CACHE };
-  if (command === "serve") return serve(root, indexOptions);
+  if (command === "serve") return serve(root, indexOptions, { lean: values.lean });
   if (command === "eval" && args[0] === "gate") {
     // builds its own throwaway projects: --root is not used
     return evaluateGate(undefined, (name) => void process.stderr.write(`ria: ${name}\n`)).then((r) => {
@@ -193,6 +196,7 @@ function main(): void | Promise<void> {
       force: values.force,
       hooks: values.hooks,
       enforce: values.enforce,
+      lean: values.lean,
     });
     if ("error" in plan) throw new Error(plan.error);
     const written = values.apply ? applyInit(root, plan) : 0;

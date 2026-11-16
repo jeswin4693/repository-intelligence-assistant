@@ -11,7 +11,7 @@ Status: steps 1 (navigation), 2 (change gate), 3 (`plan_score`), 4 (role pack an
 
 ```powershell
 npm run typecheck   # src and tests
-npm test            # 519 tests, about 1.5 min
+npm test            # 531 tests, about 1.5 min
 npm run eval        # gate against injected faults; ria eval history --root <repo> measures the tools on a real history
 npm run build       # needed before `node dist/index.js ...` or the MCP configs; tests run from src
 ```
@@ -34,6 +34,11 @@ npm run build       # needed before `node dist/index.js ...` or the MCP configs;
 - The `PreToolUse` hook (`src/hooks/pretool.ts`) refuses with a `deny` and otherwise prints nothing. Never print an
   explicit `allow` from it: that would skip the user's own permission prompts. A hook that breaks must exit 1 (a
   non-blocking error), never leave an edit blocked, and it reads only `.ria/gate`, so it writes nothing.
+- Lean mode (`ria serve --lean`, `LEAN_TOOLS` in `src/server.ts`) offers read-only lookups only: nothing that runs a command,
+  writes or reaches the network. Anything added to `LEAN_TOOLS` must be read-only (a test checks the annotation), and its
+  instructions must not name a tool a lean server does not have. A change to what a chat is handed (instructions, tool
+  descriptions, a tool's output size) can cost or save tokens on every turn: measure it before keeping it (README, "Tokens: a
+  plain chat against RIA"); two outline changes that looked right were dropped that way.
 - Bump `CACHE_SCHEMA` in `src/repo/repo-index.ts` when the content of a cached file record changes.
 - Every behaviour gets a test. For ranking or parser changes also run the tools on a real repository with `--no-cache`
   (small fixtures alone missed several real problems).
